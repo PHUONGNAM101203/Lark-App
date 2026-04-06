@@ -4,75 +4,82 @@ const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 
 const app = express();
-// 1. Phải có dòng này để Vercel đọc được dữ liệu JSON
 app.use(express.json()); 
 
 // ==========================================
-// KẾT NỐI MONGODB
+// 1. KẾT NỐI MONGODB (SERVERLESS)
 // ==========================================
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('✅ Đã kết nối MongoDB thành công!'))
-    .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
+let isConnected = false;
+async function connectDB() {
+    if (isConnected) return;
+    try {
+        await mongoose.connect(process.env.MONGODB_URI);
+        isConnected = true;
+        console.log('✅ Đã kết nối vào Database: Lark_app');
+    } catch (err) {
+        console.error('❌ Lỗi kết nối MongoDB:', err);
+    }
+}
 
+// Định nghĩa Schema
 const TaskSchema = new mongoose.Schema({
     title: String,
     project: String,
-    status: { type: String, default: 'pending' } 
+    status: { type: String, default: 'pending' },
+    createdAt: { type: Date, default: Date.now }
 });
-const Task = mongoose.model('Task', TaskSchema, 'lark_app');
 
-// ==========================================
-// KHỞI TẠO LARK CLIENT
-// ==========================================
+// ⚠️ ĐIỂM THAY ĐỔI: Ép buộc lưu vào đúng collection "lark"
+const Task = mongoose.model('Task', TaskSchema, 'lark');
+
 const client = new lark.Client({
     appId: process.env.LARK_APP_ID,
     appSecret: process.env.LARK_APP_SECRET,
 });
 
 // ==========================================
-// API 1: LẮNG NGHE TIN NHẮN (THAY THẾ ADAPT EXPRESS)
+// 2. XỬ LÝ EVENT TỪ LARK
 // ==========================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
 
-    // BƯỚC QUAN TRỌNG NHẤT: Trả lời mã Challenge của Lark để qua ải "JSON format"
     if (data.type === 'url_verification') {
         return res.status(200).json({ challenge: data.challenge });
     }
 
-    // Xử lý khi có tin nhắn thật gửi đến
     if (data.header && data.header.event_type === 'im.message.receive_v1') {
         const message = data.event.message;
         if (message.message_type !== 'text') return res.status(200).json({ success: true });
 
-        const contentStr = JSON.parse(message.content).text.toLowerCase();
+        const rawContent = JSON.parse(message.content).text;
+        const contentStr = rawContent.toLowerCase();
 
-        // Nếu chat chữ "task"
-        if (contentStr.includes('task')) {
-            const pendingTasks = await Task.find({ status: 'pending' });
-            let taskListText = "Tuyệt vời, không có task nào đang tồn đọng!";
-            let hasTask = false;
+        await connectDB();
 
-            if (pendingTasks.length > 0) {
-                hasTask = true;
-                taskListText = pendingTasks.map((t, i) => `**${i + 1}. [${t.project || 'Chung'}]** ${t.title}`).join('\n');
-            }
+        // TÍNH NĂNG 1: Tạo Task mới
+        if (contentStr.startsWith('add task')) {
+            const taskTitle = rawContent.replace(/add task/i, '').trim();
+            let projectName = taskTitle.toUpperCase().includes('HANDDN') ? 'HANDDN' : 
+                              taskTitle.toUpperCase().includes('WILD & KING') ? 'Wild & King' : 'Chung';
 
-            const cardElements = [
-                { tag: 'div', text: { tag: 'lark_md', content: taskListText } }
-            ];
+            await Task.create({ title: taskTitle, project: projectName });
+            
+            await client.im.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: {
+                    receive_id: message.chat_id,
+                    msg_type: 'text',
+                    content: JSON.stringify({ text: `✅ Đã tạo task mới: "${taskTitle}" (Lưu vào bảng lark)` })
+                }
+            });
+        }
 
-            if (hasTask) {
-                cardElements.push({
-                    tag: 'action', 
-                    actions: [{
-                        tag: 'button',
-                        text: { tag: 'plain_text', content: '✅ Xong hết rồi (Done)' },
-                        type: 'primary',
-                        value: { action: 'mark_all_done' } 
-                    }]
-                });
-            }
+        // TÍNH NĂNG 2: Liệt kê Task
+        else if (contentStr.includes('task')) {
+            const pendingTasks = await Task.find({ status: 'pending' }).sort({ createdAt: -1 });
+            let taskListText = pendingTasks.length > 0 
+                ? pendingTasks.map((t, i) => `**${i + 1}. [${t.project}]** ${t.title}`).join('\n')
+                : "🎉 Không có task nào đang chờ xử lý!";
 
             await client.im.message.create({
                 params: { receive_id_type: 'chat_id' },
@@ -80,45 +87,37 @@ app.post('/webhook/event', async (req, res) => {
                     receive_id: message.chat_id,
                     msg_type: 'interactive',
                     content: JSON.stringify({
-                        header: { title: { tag: 'plain_text', content: '📋 Cập nhật công việc' }, template: "blue" },
-                        elements: cardElements
+                        header: { title: { tag: 'plain_text', content: '📋 Danh sách Task' }, template: "blue" },
+                        elements: [
+                            { tag: 'div', text: { tag: 'lark_md', content: taskListText } },
+                            ...(pendingTasks.length > 0 ? [{
+                                tag: 'action', 
+                                actions: [{
+                                    tag: 'button',
+                                    text: { tag: 'plain_text', content: '✅ Hoàn thành tất cả' },
+                                    type: 'primary',
+                                    value: { action: 'mark_all_done' } 
+                                }]
+                            }] : [])
+                        ]
                     })
                 }
             });
         }
     }
-    
-    // Luôn trả về 200 OK để Lark không báo lỗi
     return res.status(200).json({ success: true });
 });
 
-// ==========================================
-// API 2: XỬ LÝ KHI BẤM NÚT TRÊN CARD
-// ==========================================
 app.post('/webhook/card', async (req, res) => {
     const data = req.body || {};
+    if (data.type === 'url_verification') return res.status(200).json({ challenge: data.challenge });
 
-    // Cần Challenge cả ở Card để lưu link thành công
-    if (data.type === 'url_verification') {
-        return res.status(200).json({ challenge: data.challenge });
-    }
-
-    // Xử lý logic bấm nút hoàn thành
-    if (data.action && data.action.value && data.action.value.action === 'mark_all_done') {
+    if (data.action?.value?.action === 'mark_all_done') {
+        await connectDB();
         await Task.updateMany({ status: 'pending' }, { status: 'done' });
-        console.log("✅ Đã hoàn thành task.");
-
-        // Phản hồi Toast Popup
-        return res.status(200).json({
-            toast: {
-                type: 'success',
-                content: '🎉 Quá đỉnh! Tất cả công việc đã được giải quyết.'
-            }
-        });
+        return res.status(200).json({ toast: { type: 'success', content: '🎉 Tất cả task đã hoàn thành!' } });
     }
-    
     return res.status(200).json({ success: true });
 });
 
-// Xuất cho Vercel
 module.exports = app;
