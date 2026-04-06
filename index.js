@@ -116,8 +116,8 @@ app.post('/webhook/event', lark.adaptExpress(eventDispatcher));
 // Mở endpoint cho nút bấm trên thẻ
 app.post('/webhook/card', lark.adaptExpress(cardActionHandler));
 
-// Khởi động server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Server Bot đang chạy tại http://localhost:${PORT}`);
-});
+// ==========================================
+// 4. XUẤT APP CHO VERCEL (ĐÃ SỬA)
+// ==========================================
+// Dùng module.exports thay vì app.listen để tương thích với hệ thống Serverless của Vercel
+module.exports = app;
