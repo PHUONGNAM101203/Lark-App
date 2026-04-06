@@ -2,12 +2,13 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
+const Papa = require('papaparse'); 
 
 const app = express();
 app.use(express.json()); 
 
 // ==========================================
-// 1. KẾT NỐI MONGODB (SERVERLESS)
+// 1. KẾT NỐI MONGODB & TẠO BẢNG CHỨA DỮ LIỆU CSV
 // ==========================================
 let isConnected = false;
 async function connectDB() {
@@ -15,22 +16,20 @@ async function connectDB() {
     try {
         await mongoose.connect(process.env.MONGODB_URI);
         isConnected = true;
-        console.log('✅ Đã kết nối vào Database: Lark_app');
+        console.log('✅ Đã kết nối MongoDB (Chế độ Serverless)');
     } catch (err) {
         console.error('❌ Lỗi kết nối MongoDB:', err);
     }
 }
 
-// Định nghĩa Schema
-const TaskSchema = new mongoose.Schema({
-    title: String,
-    project: String,
-    status: { type: String, default: 'pending' },
-    createdAt: { type: Date, default: Date.now }
+// Bảng này sẽ nhận BẤT KỲ định dạng dữ liệu nào từ file CSV của bạn
+const CsvDataSchema = new mongoose.Schema({
+    rowData: mongoose.Schema.Types.Mixed, // Linh hoạt nhận mọi loại số lượng cột
+    fileName: String,
+    importedAt: { type: Date, default: Date.now }
 });
-
-// ⚠️ ĐIỂM THAY ĐỔI: Ép buộc lưu vào đúng collection "lark"
-const Task = mongoose.model('Task', TaskSchema, 'lark');
+// Dữ liệu sẽ được lưu vào collection tên là "csv_imports"
+const CsvRecord = mongoose.model('CsvRecord', CsvDataSchema, 'csv_imports');
 
 const client = new lark.Client({
     appId: process.env.LARK_APP_ID,
@@ -38,7 +37,7 @@ const client = new lark.Client({
 });
 
 // ==========================================
-// 2. XỬ LÝ EVENT TỪ LARK
+// 2. BOT CHỈ LẮNG NGHE VÀ XỬ LÝ FILE
 // ==========================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
@@ -49,75 +48,87 @@ app.post('/webhook/event', async (req, res) => {
 
     if (data.header && data.header.event_type === 'im.message.receive_v1') {
         const message = data.event.message;
-        if (message.message_type !== 'text') return res.status(200).json({ success: true });
 
-        const rawContent = JSON.parse(message.content).text;
-        const contentStr = rawContent.toLowerCase();
+        // --- NẾU NGƯỜI DÙNG GỬI FILE ---
+        if (message.message_type === 'file') {
+            try {
+                const fileContent = JSON.parse(message.content);
+                const fileKey = fileContent.file_key;
+                const fileName = fileContent.file_name;
 
-        await connectDB();
+                // Chỉ chấp nhận file .csv
+                if (fileName.toLowerCase().endsWith('.csv')) {
+                    
+                    // 1. Báo đang xử lý
+                    await client.im.message.reply({
+                        path: { message_id: message.message_id },
+                        data: { content: JSON.stringify({ text: `⏳ Đang đọc và phân tích file: ${fileName}...` }), msg_type: 'text' }
+                    });
 
-        // TÍNH NĂNG 1: Tạo Task mới
-        if (contentStr.startsWith('add task')) {
-            const taskTitle = rawContent.replace(/add task/i, '').trim();
-            let projectName = taskTitle.toUpperCase().includes('HANDDN') ? 'HANDDN' : 
-                              taskTitle.toUpperCase().includes('WILD & KING') ? 'Wild & King' : 'Chung';
+                    // 2. Tải file về RAM
+                    const fileData = await client.im.messageResource.get({
+                        path: { message_id: message.message_id, file_key: fileKey },
+                        params: { type: 'file' }
+                    });
 
-            await Task.create({ title: taskTitle, project: projectName });
-            
-            await client.im.message.create({
-                params: { receive_id_type: 'chat_id' },
-                data: {
-                    receive_id: message.chat_id,
-                    msg_type: 'text',
-                    content: JSON.stringify({ text: `✅ Đã tạo task mới: "${taskTitle}" (Lưu vào bảng lark)` })
+                    // 3. Chuyển Binary thành Text và parse bằng PapaParse
+                    const csvString = Buffer.from(fileData).toString('utf8');
+                    const parsedData = Papa.parse(csvString, {
+                        header: true, // Lấy dòng đầu tiên làm tên cột
+                        skipEmptyLines: true
+                    });
+
+                    const rows = parsedData.data;
+
+                    // 4. Lưu vào MongoDB
+                    if (rows.length > 0) {
+                        await connectDB();
+
+                        // Đóng gói từng dòng dữ liệu để đưa vào MongoDB
+                        const recordsToSave = rows.map(row => ({
+                            rowData: row,
+                            fileName: fileName
+                        }));
+
+                        await CsvRecord.insertMany(recordsToSave);
+
+                        // 5. Báo cáo thành công
+                        await client.im.message.reply({
+                            path: { message_id: message.message_id },
+                            data: { content: JSON.stringify({ text: `✅ Tuyệt vời! Đã nhập thành công ${rows.length} dòng dữ liệu từ file vào Database.` }), msg_type: 'text' }
+                        });
+                    } else {
+                        await client.im.message.reply({
+                            path: { message_id: message.message_id },
+                            data: { content: JSON.stringify({ text: `❌ File CSV trống, không có dữ liệu để lưu.` }), msg_type: 'text' }
+                        });
+                    }
+                } else {
+                    // Nhắc nhở nếu gửi sai đuôi file
+                    await client.im.message.reply({
+                        path: { message_id: message.message_id },
+                        data: { content: JSON.stringify({ text: `⚠️ Tôi chỉ có thể đọc được file định dạng .csv thôi nhé!` }), msg_type: 'text' }
+                    });
                 }
-            });
-        }
-
-        // TÍNH NĂNG 2: Liệt kê Task
-        else if (contentStr.includes('task')) {
-            const pendingTasks = await Task.find({ status: 'pending' }).sort({ createdAt: -1 });
-            let taskListText = pendingTasks.length > 0 
-                ? pendingTasks.map((t, i) => `**${i + 1}. [${t.project}]** ${t.title}`).join('\n')
-                : "🎉 Không có task nào đang chờ xử lý!";
-
-            await client.im.message.create({
-                params: { receive_id_type: 'chat_id' },
-                data: {
-                    receive_id: message.chat_id,
-                    msg_type: 'interactive',
-                    content: JSON.stringify({
-                        header: { title: { tag: 'plain_text', content: '📋 Danh sách Task' }, template: "blue" },
-                        elements: [
-                            { tag: 'div', text: { tag: 'lark_md', content: taskListText } },
-                            ...(pendingTasks.length > 0 ? [{
-                                tag: 'action', 
-                                actions: [{
-                                    tag: 'button',
-                                    text: { tag: 'plain_text', content: '✅ Hoàn thành tất cả' },
-                                    type: 'primary',
-                                    value: { action: 'mark_all_done' } 
-                                }]
-                            }] : [])
-                        ]
-                    })
-                }
+            } catch (error) {
+                console.error("Lỗi xử lý file CSV:", error);
+                await client.im.message.reply({
+                    path: { message_id: message.message_id },
+                    data: { content: JSON.stringify({ text: `❌ Đã xảy ra lỗi khi đọc file. File có thể bị lỗi font hoặc sai cấu trúc.` }), msg_type: 'text' }
+                });
+            }
+        } 
+        // --- NẾU NGƯỜI DÙNG CHAT CHỮ BÌNH THƯỜNG ---
+        else if (message.message_type === 'text') {
+            await client.im.message.reply({
+                path: { message_id: message.message_id },
+                data: { content: JSON.stringify({ text: `👋 Chào bạn! Hãy ném một file dữ liệu (.csv) vào đây, tôi sẽ lập tức phân tích và lưu trữ giúp bạn.` }), msg_type: 'text' }
             });
         }
     }
+    
     return res.status(200).json({ success: true });
 });
 
-app.post('/webhook/card', async (req, res) => {
-    const data = req.body || {};
-    if (data.type === 'url_verification') return res.status(200).json({ challenge: data.challenge });
-
-    if (data.action?.value?.action === 'mark_all_done') {
-        await connectDB();
-        await Task.updateMany({ status: 'pending' }, { status: 'done' });
-        return res.status(200).json({ toast: { type: 'success', content: '🎉 Tất cả task đã hoàn thành!' } });
-    }
-    return res.status(200).json({ success: true });
-});
-
+// Xuất app cho Vercel
 module.exports = app;
