@@ -7,28 +7,23 @@ const Papa = require('papaparse');
 const app = express();
 app.use(express.json()); 
 
-// ==========================================
-// 1. KẾT NỐI MONGODB & TẠO BẢNG CHỨA DỮ LIỆU CSV
-// ==========================================
 let isConnected = false;
 async function connectDB() {
     if (isConnected) return;
     try {
         await mongoose.connect(process.env.MONGODB_URI);
         isConnected = true;
-        console.log('✅ Đã kết nối MongoDB (Chế độ Serverless)');
+        console.log('✅ Đã kết nối MongoDB');
     } catch (err) {
         console.error('❌ Lỗi kết nối MongoDB:', err);
     }
 }
 
-// Bảng này sẽ nhận BẤT KỲ định dạng dữ liệu nào từ file CSV của bạn
 const CsvDataSchema = new mongoose.Schema({
-    rowData: mongoose.Schema.Types.Mixed, // Linh hoạt nhận mọi loại số lượng cột
+    rowData: mongoose.Schema.Types.Mixed,
     fileName: String,
     importedAt: { type: Date, default: Date.now }
 });
-// Dữ liệu sẽ được lưu vào collection tên là "csv_imports"
 const CsvRecord = mongoose.model('CsvRecord', CsvDataSchema, 'csv_imports');
 
 const client = new lark.Client({
@@ -36,11 +31,11 @@ const client = new lark.Client({
     appSecret: process.env.LARK_APP_SECRET,
 });
 
-// ==========================================
-// 2. BOT CHỈ LẮNG NGHE VÀ XỬ LÝ FILE
-// ==========================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
+    
+    // 🔴 RADAR: Ghi log toàn bộ gói tin Lark gửi đến vào Vercel
+    console.log("📥 [LARK EVENT NHẬN ĐƯỢC]:", JSON.stringify(data, null, 2));
 
     if (data.type === 'url_verification') {
         return res.status(200).json({ challenge: data.challenge });
@@ -49,80 +44,92 @@ app.post('/webhook/event', async (req, res) => {
     if (data.header && data.header.event_type === 'im.message.receive_v1') {
         const message = data.event.message;
 
-        // --- NẾU NGƯỜI DÙNG GỬI FILE ---
-        if (message.message_type === 'file') {
-            try {
+        try {
+            // ----------------------------------------------------------------
+            // 1. NẾU LÀ FILE VẬT LÝ
+            // ----------------------------------------------------------------
+            if (message.message_type === 'file') {
                 const fileContent = JSON.parse(message.content);
-                const fileKey = fileContent.file_key;
                 const fileName = fileContent.file_name;
+                const fileKey = fileContent.file_key;
 
-                // Chỉ chấp nhận file .csv
+                // 🔴 BƯỚC XÁC NHẬN SỐ 1: Báo cáo ngay lập tức
+                await client.im.message.reply({
+                    path: { message_id: message.message_id },
+                    data: { content: JSON.stringify({ text: `📡 Radar xác nhận: Đã nhìn thấy file "${fileName}". Bắt đầu tải và phân tích...` }), msg_type: 'text' }
+                });
+
                 if (fileName.toLowerCase().endsWith('.csv')) {
-                    
-                    // 1. Báo đang xử lý
-                    await client.im.message.reply({
-                        path: { message_id: message.message_id },
-                        data: { content: JSON.stringify({ text: `⏳ Đang đọc và phân tích file: ${fileName}...` }), msg_type: 'text' }
-                    });
-
-                    // 2. Tải file về RAM
                     const fileData = await client.im.messageResource.get({
                         path: { message_id: message.message_id, file_key: fileKey },
                         params: { type: 'file' }
                     });
 
-                    // 3. Chuyển Binary thành Text và parse bằng PapaParse
                     const csvString = Buffer.from(fileData).toString('utf8');
-                    const parsedData = Papa.parse(csvString, {
-                        header: true, // Lấy dòng đầu tiên làm tên cột
-                        skipEmptyLines: true
-                    });
-
+                    const parsedData = Papa.parse(csvString, { header: true, skipEmptyLines: true });
                     const rows = parsedData.data;
 
-                    // 4. Lưu vào MongoDB
                     if (rows.length > 0) {
                         await connectDB();
-
-                        // Đóng gói từng dòng dữ liệu để đưa vào MongoDB
-                        const recordsToSave = rows.map(row => ({
-                            rowData: row,
-                            fileName: fileName
-                        }));
-
+                        const recordsToSave = rows.map(row => ({ rowData: row, fileName: fileName }));
                         await CsvRecord.insertMany(recordsToSave);
 
-                        // 5. Báo cáo thành công
                         await client.im.message.reply({
                             path: { message_id: message.message_id },
-                            data: { content: JSON.stringify({ text: `✅ Tuyệt vời! Đã nhập thành công ${rows.length} dòng dữ liệu từ file vào Database.` }), msg_type: 'text' }
+                            data: { content: JSON.stringify({ text: `✅ Tuyệt vời! Đã nhập thành công ${rows.length} dòng dữ liệu vào Database.` }), msg_type: 'text' }
                         });
                     } else {
                         await client.im.message.reply({
                             path: { message_id: message.message_id },
-                            data: { content: JSON.stringify({ text: `❌ File CSV trống, không có dữ liệu để lưu.` }), msg_type: 'text' }
+                            data: { content: JSON.stringify({ text: `❌ File CSV rỗng!` }), msg_type: 'text' }
                         });
                     }
                 } else {
-                    // Nhắc nhở nếu gửi sai đuôi file
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
-                        data: { content: JSON.stringify({ text: `⚠️ Tôi chỉ có thể đọc được file định dạng .csv thôi nhé!` }), msg_type: 'text' }
+                        data: { content: JSON.stringify({ text: `⚠️ Tôi chỉ xử lý được file .csv thôi nhé!` }), msg_type: 'text' }
                     });
                 }
-            } catch (error) {
-                console.error("Lỗi xử lý file CSV:", error);
+            } 
+            // ----------------------------------------------------------------
+            // 2. NẾU LÀ TIN NHẮN CHỮ HOẶC REPLY FILE TRONG NHÓM
+            // ----------------------------------------------------------------
+            else if (message.message_type === 'text') {
+                let isReplyFile = false;
+                
+                // Kiểm tra xem có phải đang Reply một file không
+                if (message.parent_id) {
+                    const parentRes = await client.im.message.get({ path: { message_id: message.parent_id } });
+                    if (parentRes.data.items[0].msg_type === 'file') {
+                        isReplyFile = true;
+                        await client.im.message.reply({
+                            path: { message_id: message.message_id },
+                            data: { content: JSON.stringify({ text: `📡 Radar xác nhận: Bạn vừa Reply một file. Để code đơn giản, hiện tại hãy chat 1-1 và ném file thẳng cho tôi nhé!` }), msg_type: 'text' }
+                        });
+                    }
+                }
+
+                if (!isReplyFile) {
+                    await client.im.message.reply({
+                        path: { message_id: message.message_id },
+                        data: { content: JSON.stringify({ text: `👋 Chào bạn! Hãy thả trực tiếp một file .csv vào khung chat này để tôi xử lý.` }), msg_type: 'text' }
+                    });
+                }
+            }
+            // ----------------------------------------------------------------
+            // 3. NẾU LÀ CÁC LOẠI KHÁC (ẢNH, VIDEO, TÀI LIỆU LARK DOCS)
+            // ----------------------------------------------------------------
+            else {
                 await client.im.message.reply({
                     path: { message_id: message.message_id },
-                    data: { content: JSON.stringify({ text: `❌ Đã xảy ra lỗi khi đọc file. File có thể bị lỗi font hoặc sai cấu trúc.` }), msg_type: 'text' }
+                    data: { content: JSON.stringify({ text: `⚠️ Radar phát hiện: Bạn vừa gửi định dạng "${message.message_type}". Đây không phải là file vật lý, hãy tải xuống thành .csv và gửi lại nhé.` }), msg_type: 'text' }
                 });
             }
-        } 
-        // --- NẾU NGƯỜI DÙNG CHAT CHỮ BÌNH THƯỜNG ---
-        else if (message.message_type === 'text') {
+        } catch (error) {
+            console.error("❌ LỖI NGHIÊM TRỌNG:", error);
             await client.im.message.reply({
                 path: { message_id: message.message_id },
-                data: { content: JSON.stringify({ text: `👋 Chào bạn! Hãy ném một file dữ liệu (.csv) vào đây, tôi sẽ lập tức phân tích và lưu trữ giúp bạn.` }), msg_type: 'text' }
+                data: { content: JSON.stringify({ text: `❌ Code bị sập giữa chừng! Hãy xem Vercel Logs.` }), msg_type: 'text' }
             });
         }
     }
@@ -130,5 +137,4 @@ app.post('/webhook/event', async (req, res) => {
     return res.status(200).json({ success: true });
 });
 
-// Xuất app cho Vercel
 module.exports = app;
