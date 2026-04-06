@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 
 const app = express();
-app.use(express.json());
+// ⚠️ Đã xóa app.use(express.json()) để thư viện Lark tự động xử lý gói tin (tránh lỗi JSON format)
 
 // ==========================================
 // 1. KẾT NỐI MONGODB & TẠO DATABASE MODEL
@@ -16,11 +16,11 @@ mongoose.connect(process.env.MONGODB_URI)
 // Định nghĩa cấu trúc bảng dữ liệu
 const TaskSchema = new mongoose.Schema({
     title: String,
-    project: String, // Ví dụ: 'HANDDN' hoặc 'Wild & King'
-    status: { type: String, default: 'pending' } // pending hoặc done
+    project: String,
+    status: { type: String, default: 'pending' } 
 });
 
-// ÉP BUỘC lưu vào collection "lark_app"
+// Ép lưu vào đúng thư mục lark_app
 const Task = mongoose.model('Task', TaskSchema, 'lark_app');
 
 // ==========================================
@@ -36,7 +36,7 @@ const eventDispatcher = new lark.EventDispatcher({}).register({
     'im.message.receive_v1': async (data) => {
         try {
             const message = data.message;
-            if (message.message_type !== 'text') return;
+            if (message.message_type !== 'text') return { success: true };
 
             const contentStr = JSON.parse(message.content).text.toLowerCase();
 
@@ -50,17 +50,26 @@ const eventDispatcher = new lark.EventDispatcher({}).register({
 
                 if (pendingTasks.length > 0) {
                     hasTask = true;
-                    // In danh sách ra text
                     taskListText = pendingTasks.map((t, i) => `**${i + 1}. [${t.project || 'Chung'}]** ${t.title}`).join('\n');
                 }
 
-                // Nút bấm "Xong hết rồi" (chỉ hiện khi có task)
-                const actions = hasTask ? [{
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: '✅ Xong hết rồi (Done)' },
-                    type: 'primary',
-                    value: { action: 'mark_all_done' } 
-                }] : [];
+                // Cấu hình các khối (elements) cho thẻ Card
+                const cardElements = [
+                    { tag: 'div', text: { tag: 'lark_md', content: taskListText } }
+                ];
+
+                // Chỉ thêm nút bấm "Xong hết rồi" nếu có task
+                if (hasTask) {
+                    cardElements.push({
+                        tag: 'action', 
+                        actions: [{
+                            tag: 'button',
+                            text: { tag: 'plain_text', content: '✅ Xong hết rồi (Done)' },
+                            type: 'primary',
+                            value: { action: 'mark_all_done' } 
+                        }]
+                    });
+                }
 
                 // Gửi Thẻ tương tác (Interactive Card) vào nhóm Lark
                 await client.im.message.create({
@@ -73,10 +82,7 @@ const eventDispatcher = new lark.EventDispatcher({}).register({
                                 title: { tag: 'plain_text', content: '📋 Cập nhật công việc' },
                                 template: "blue"
                             },
-                            elements: [
-                                { tag: 'div', text: { tag: 'lark_md', content: taskListText } },
-                                { tag: 'action', actions: actions }
-                            ]
+                            elements: cardElements
                         })
                     }
                 });
@@ -84,7 +90,7 @@ const eventDispatcher = new lark.EventDispatcher({}).register({
         } catch (error) {
             console.error("Lỗi khi xử lý tin nhắn:", error);
         }
-        return { success: true };
+        return { success: true }; // Phải trả về success để Lark biết đã nhận được
     }
 });
 
@@ -110,14 +116,10 @@ const cardActionHandler = new lark.CardActionHandler({}).register('mark_all_done
 // ==========================================
 // 3. MỞ CỔNG NHẬN DỮ LIỆU TỪ LARK (ROUTER)
 // ==========================================
-// Mở endpoint cho tin nhắn
 app.post('/webhook/event', lark.adaptExpress(eventDispatcher));
-
-// Mở endpoint cho nút bấm trên thẻ
 app.post('/webhook/card', lark.adaptExpress(cardActionHandler));
 
 // ==========================================
-// 4. XUẤT APP CHO VERCEL (ĐÃ SỬA)
+// 4. XUẤT APP CHO VERCEL
 // ==========================================
-// Dùng module.exports thay vì app.listen để tương thích với hệ thống Serverless của Vercel
 module.exports = app;
