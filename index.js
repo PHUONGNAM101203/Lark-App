@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json());
 
 // ==========================================
-// 1. BỘ LỌC CHỐNG TRÙNG LẶP (CHỐNG LARK SPAM)
+// 1. BỘ LỌC CHỐNG TRÙNG LẶP
 // ==========================================
 const processedEvents = new Set();
 
@@ -31,7 +31,6 @@ async function connectDB() {
     }
 }
 
-// Lược đồ Database
 const CsvVaultSchema = new mongoose.Schema({
     fileName: String,
     fileContentRaw: String,
@@ -47,28 +46,22 @@ const client = new lark.Client({
 });
 
 // =====================================================================
-// 3. WEBHOOK CHÍNH: NHẬN FILE TỪ LARK
+// 3. WEBHOOK CHÍNH
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
 
-    // Xác thực URL
     if (data.type === 'url_verification') {
         return res.status(200).json({ challenge: data.challenge });
     }
 
-    // Lọc sự kiện trùng lặp
     const eventId = data.header && data.header.event_id;
     if (eventId) {
-        if (processedEvents.has(eventId)) {
-            console.log(`⏩ Đã bỏ qua sự kiện lặp lại: ${eventId}`);
-            return res.status(200).json({ success: true });
-        }
+        if (processedEvents.has(eventId)) return res.status(200).json({ success: true });
         processedEvents.add(eventId);
-        setTimeout(() => processedEvents.delete(eventId), 10 * 60 * 1000); // Xóa bộ nhớ sau 10p
+        setTimeout(() => processedEvents.delete(eventId), 10 * 60 * 1000); 
     }
 
-    // Xử lý tin nhắn
     if (data.header && data.header.event_type === 'im.message.receive_v1') {
         const message = data.event.message;
 
@@ -79,7 +72,6 @@ app.post('/webhook/event', async (req, res) => {
                 if (file_name.toLowerCase().endsWith('.csv')) {
                     console.log(`\n📂 Bắt đầu tải file: ${file_name}`);
 
-                    // Tải file trực tiếp bằng API (Bỏ qua lỗi của SDK)
                     const tokenRes = await client.auth.tenantAccessToken.internal({
                         data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }
                     });
@@ -93,41 +85,37 @@ app.post('/webhook/event', async (req, res) => {
 
                     if (!fetchRes.ok) throw new Error(`Lỗi tải file: ${fetchRes.statusText}`);
 
-                    // Đọc file thành chuỗi
                     const arrayBuffer = await fetchRes.arrayBuffer();
                     const fileBuffer = Buffer.from(arrayBuffer);
                     let csvString = fileBuffer.toString('utf-8');
-                    csvString = csvString.replace(/^\uFEFF/, ''); // Xóa ký tự BOM (Quan trọng để cột đầu tiên không bị lỗi tên)
+                    csvString = csvString.replace(/^\uFEFF/, ''); 
 
                     if (!csvString.trim()) throw new Error("Nội dung file rỗng.");
 
-                    // CHIA CỘT CHIA DÒNG CHÍNH XÁC BẰNG PAPAPARSE
                     const parsed = Papa.parse(csvString, {
-                        header: true, // Tự động lấy dòng 1 làm Tên Cột (Name, Email...)
-                        skipEmptyLines: 'greedy', // Bỏ qua dòng trống
-                        dynamicTyping: true, // Tự động nhận diện số
-                        transformHeader: (h) => h.trim() // Xóa khoảng trắng thừa ở tên cột
+                        header: true,
+                        skipEmptyLines: 'greedy',
+                        dynamicTyping: true,
+                        transformHeader: (h) => h.trim() 
                     });
 
                     const rowsData = parsed.data;
 
                     // ========================================================
-                    // ✅ YÊU CẦU CỦA BẠN: VÒNG LẶP KIỂM TRA DỮ LIỆU CHÍNH XÁC
+                    // ✅ UPDATE: ĐỌC ĐỘNG MỌI CỘT TRONG FILE
                     // ========================================================
-                    console.log("--- KẾT QUẢ ĐỌC FILE ---");
+                    console.log(`\n--- KẾT QUẢ ĐỌC FILE: ${file_name} ---`);
                     rowsData.forEach((row, index) => { 
-                        // Mẹo nhỏ: Dùng || để phòng trường hợp file CSV viết hoa chữ N hoặc E
-                        const name = row.name || row.Name || row.NAME || "Không có tên";
-                        const email = row.email || row.Email || row.EMAIL || "Không có email";
+                        console.log(`[Dòng ${index + 1}]:`); 
                         
-                        console.log(`Row: ${index + 1}`); 
-                        console.log(` - Name: ${name}`); 
-                        console.log(` - Email: ${email}`);
+                        // Object.entries sẽ tự động lấy tất cả "Tên Cột" và "Giá Trị" của dòng đó
+                        for (const [columnName, value] of Object.entries(row)) {
+                            console.log(`   🔸 ${columnName}: ${value}`);
+                        }
                     });
-                    console.log("------------------------\n");
+                    console.log("------------------------------------\n");
                     // ========================================================
 
-                    // Lưu vào MongoDB
                     await connectDB();
                     const newFileEntry = new CsvVault({
                         fileName: file_name,
@@ -136,9 +124,7 @@ app.post('/webhook/event', async (req, res) => {
                         parsedData: rowsData
                     });
                     const savedDoc = await newFileEntry.save();
-                    console.log(`✅ Đã lưu ${rowsData.length} dòng vào MongoDB`);
 
-                    // Gửi thẻ Card báo cáo cho Lark
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
                         data: {
@@ -173,9 +159,6 @@ app.post('/webhook/event', async (req, res) => {
     return res.status(200).json({ success: true });
 });
 
-// =====================================================================
-// 4. WEBHOOK PHỤ: XÓA FILE TRÊN CARD
-// =====================================================================
 app.post('/webhook/card', async (req, res) => {
     const data = req.body || {};
     if (data.action && data.action.value && data.action.value.action === 'delete_file') {
@@ -191,7 +174,6 @@ app.post('/webhook/card', async (req, res) => {
     return res.status(200).json({ success: true });
 });
 
-// Cho phép chạy Local hoặc trên Vercel
 module.exports = app;
 if (process.env.NODE_ENV !== 'production') {
     const PORT = process.env.PORT || 3000;
