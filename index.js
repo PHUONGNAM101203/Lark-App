@@ -41,33 +41,58 @@ const client = new lark.Client({
     appSecret: process.env.LARK_APP_SECRET,
 });
 
-// ✅ HÀM 3.0: Bắt lỗi thông minh & Xử lý mọi loại định dạng từ Lark
+// ✅ HÀM 4.0: BẮT ĐÚNG ARRAYBUFFER, MỌI ĐỊNH DẠNG TỪ LARK
 async function extractFileContent(response) {
     if (!response) throw new Error("Lark không trả về dữ liệu.");
 
-    // 1. Nếu Lark trả về lỗi dạng JSON (Thường là lỗi thiếu quyền)
     if (response.code && response.code !== 0) {
         throw new Error(`Lark từ chối (Mã ${response.code}): ${response.msg}`);
     }
 
-    // 2. Nếu trả về File dạng Buffer
-    if (Buffer.isBuffer(response)) return response;
+    // 1. Tìm đúng túi chứa dữ liệu (Lark bọc trong .data hoặc .body)
+    let target = response;
+    if (response.data) target = response.data;
+    else if (response.body) target = response.body;
 
-    // 3. Nếu dữ liệu bị bọc bên trong trường response.data
-    if (response.data && Buffer.isBuffer(response.data)) return response.data;
+    // 2. Nếu là Buffer chuẩn
+    if (Buffer.isBuffer(target)) return target;
 
-    // 4. Nếu trả về dạng Stream
-    if (typeof response.on === 'function') {
+    // 3. Nếu là ArrayBuffer hoặc Uint8Array (Chính là thủ phạm gây lỗi vừa rồi)
+    if (target instanceof ArrayBuffer || Object.prototype.toString.call(target) === '[object ArrayBuffer]') {
+        return Buffer.from(target);
+    }
+    if (target.buffer && target.buffer instanceof ArrayBuffer) {
+        return Buffer.from(target);
+    }
+
+    // 4. Nếu là Node.js Stream
+    if (typeof target.on === 'function') {
         return new Promise((resolve, reject) => {
             const chunks = [];
-            response.on('data', (chunk) => chunks.push(chunk));
-            response.on('error', (err) => reject(err));
-            response.on('end', () => resolve(Buffer.concat(chunks)));
+            target.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+            target.on('error', reject);
+            target.on('end', () => resolve(Buffer.concat(chunks)));
         });
     }
 
-    // 5. Nếu trả về một Object lạ hoắc, báo lỗi thẳng ra màn hình để biết đường sửa
-    throw new Error("Lark trả về dữ liệu không phải File: " + JSON.stringify(response));
+    // 5. Nếu là Web Stream (Fetch API)
+    if (typeof target.getReader === 'function') {
+        const reader = target.getReader();
+        const chunks = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(value));
+        }
+        return Buffer.concat(chunks);
+    }
+
+    // Cứu cánh cuối cùng
+    try {
+        return Buffer.from(target);
+    } catch (e) {
+        throw new Error("Không thể dịch định dạng này. Kiểu dữ liệu: " + typeof target);
+    }
 }
 
 // =====================================================================
@@ -88,22 +113,24 @@ app.post('/webhook/event', async (req, res) => {
                 const { file_name, file_key } = JSON.parse(message.content);
 
                 if (file_name.toLowerCase().endsWith('.csv')) {
-                    console.log(`📂 Đang yêu cầu tải file: ${file_name}`);
+                    console.log(`📂 Đang tải file: ${file_name}`);
 
-                    // Yêu cầu Lark cho tải file
+                    // Kéo dữ liệu từ Lark
                     const response = await client.im.messageResource.get({
                         path: { message_id: message.message_id, file_key: file_key },
                         params: { type: 'file' }
                     });
 
-                    // Ép dữ liệu qua hàm thông minh để lấy File (hoặc lấy Lỗi)
+                    // Chuyển toàn bộ thành Buffer
                     const fileBuffer = await extractFileContent(response);
                     
+                    // Biến đổi thành Text
                     let csvString = fileBuffer.toString('utf-8');
-                    csvString = csvString.replace(/^\uFEFF/, ''); // Xóa BOM
+                    csvString = csvString.replace(/^\uFEFF/, ''); // Xóa ký tự rác (BOM)
 
                     if (!csvString.trim()) throw new Error("Nội dung file rỗng.");
 
+                    // Bóc tách CSV
                     const parsed = Papa.parse(csvString, {
                         header: true,
                         skipEmptyLines: 'greedy',
@@ -111,6 +138,7 @@ app.post('/webhook/event', async (req, res) => {
                         transformHeader: (h) => h.trim()
                     });
 
+                    // Lưu Database
                     await connectDB();
                     const newFileEntry = new CsvVault({
                         fileName: file_name,
@@ -120,14 +148,15 @@ app.post('/webhook/event', async (req, res) => {
                     });
                     const savedDoc = await newFileEntry.save();
 
+                    // Gửi Card Báo cáo
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '✅ Đã Nhập Kho DB' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: '✅ Đã Nhập DB Thành Công' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số dòng:** ${parsed.data.length}` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số dòng:** ${parsed.data.length}\n🗄️ **ID Bản ghi:** \`${savedDoc._id}\`` } },
                                     {
                                         tag: 'action',
                                         actions: [{
@@ -145,10 +174,9 @@ app.post('/webhook/event', async (req, res) => {
             }
         } catch (error) {
             console.error("❌ Lỗi:", error.message);
-            // Gửi tin nhắn chứa ĐÚNG LỖI mà Lark trả về cho bạn xem
             await client.im.message.reply({
                 path: { message_id: message.message_id },
-                data: { msg_type: 'text', content: JSON.stringify({ text: `❌ Lỗi hệ thống: ${error.message}` }) }
+                data: { msg_type: 'text', content: JSON.stringify({ text: `❌ Lỗi xử lý: ${error.message}` }) }
             });
         }
     }
@@ -156,16 +184,15 @@ app.post('/webhook/event', async (req, res) => {
 });
 
 app.post('/webhook/card', async (req, res) => {
-    // ... Giữ nguyên như cũ
     const data = req.body || {};
     if (data.action && data.action.value && data.action.value.action === 'delete_file') {
         const { docId } = data.action.value;
         try {
             await connectDB();
             await CsvVault.findByIdAndDelete(docId);
-            return res.status(200).json({ toast: { type: 'success', content: 'Đã xóa!' } });
+            return res.status(200).json({ toast: { type: 'success', content: 'Đã xóa dữ liệu khỏi MongoDB!' } });
         } catch (err) {
-            return res.status(200).json({ toast: { type: 'error', content: 'Lỗi xóa.' } });
+            return res.status(200).json({ toast: { type: 'error', content: 'Lỗi xóa bản ghi.' } });
         }
     }
     return res.status(200).json({ success: true });
