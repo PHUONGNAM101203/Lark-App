@@ -43,7 +43,7 @@ const client = new lark.Client({
 });
 
 // =====================================================================
-// 🟢 WEBHOOK 1: LOGIC CHUẨN - TAB (SHIPMENT DATE) - DATA (WAYBILL) -> B12
+// 🟢 WEBHOOK 1: LOGIC MỚI - MỖI DÒNG CSV LÀ 1 TAB RIÊNG BIỆT
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
@@ -68,7 +68,7 @@ app.post('/webhook/event', async (req, res) => {
                     console.log(`\n========================================`);
                     console.log(`📂 BẮT ĐẦU XỬ LÝ FILE: ${file_name}`);
 
-                    // --- BƯỚC 1: TẢI FILE ---
+                    // --- BƯỚC 1: TẢI FILE CSV ---
                     const tokenRes = await client.auth.tenantAccessToken.internal({
                         data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }
                     });
@@ -87,18 +87,7 @@ app.post('/webhook/event', async (req, res) => {
                     });
                     const rowsData = parsed.data;
 
-                    // --- BƯỚC 2: GỘP NHÓM THEO "SHIPMENT DATE" (TẠO TAB) ---
-                    const groupedByDate = {};
-                    rowsData.forEach(row => {
-                        const dateKey = Object.keys(row).find(k => k.toLowerCase().includes('shipment date'));
-                        let dateVal = dateKey && row[dateKey] ? String(row[dateKey]).trim() : 'Unknown_Date';
-                        dateVal = dateVal.replace(/[\\/?*[\]:]/g, '-').substring(0, 31);
-                        
-                        if (!groupedByDate[dateVal]) groupedByDate[dateVal] = [];
-                        groupedByDate[dateVal].push(row);
-                    });
-
-                    // --- BƯỚC 3: TẠO 1 SPREADSHEET DUY NHẤT (LOGIC CŨ) ---
+                    // --- BƯỚC 2: TẠO SPREADSHEET TỔNG ---
                     console.log(`📝 Đang tạo Lark Spreadsheet...`);
                     const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
                         method: 'POST',
@@ -111,90 +100,85 @@ app.post('/webhook/event', async (req, res) => {
                     const ssToken = createData.data.spreadsheet.spreadsheet_token;
                     const ssUrl = createData.data.spreadsheet.url;
 
-                    const sheetNames = Object.keys(groupedByDate);
-                    console.log(`📑 Đang tạo ${sheetNames.length} Tab (Shipment Date)...`);
-                    const tabRequests = sheetNames.map(name => ({ addSheet: { properties: { title: name } } }));
+                    // --- BƯỚC 3: ĐẶT TÊN TAB CHO TỪNG DÒNG (CHỐNG TRÙNG LẶP) ---
+                    // Lark không cho phép 2 Tab trùng tên. Nên nếu có 3 dòng ngày 02.04.2026,
+                    // Ta sẽ đặt tên là: 02.04.2026, 02.04.2026 (2), 02.04.2026 (3)
+                    const nameCounter = {};
+                    const tabRequests = [];
                     
+                    rowsData.forEach(row => {
+                        const dateKey = Object.keys(row).find(k => k.toLowerCase().includes('shipment date'));
+                        let baseDate = dateKey && row[dateKey] ? String(row[dateKey]).trim() : 'Unknown_Date';
+                        baseDate = baseDate.replace(/[\\/?*[\]:]/g, '-').substring(0, 25);
+
+                        let finalTabName = baseDate;
+                        if (!nameCounter[baseDate]) {
+                            nameCounter[baseDate] = 1;
+                        } else {
+                            nameCounter[baseDate]++;
+                            finalTabName = `${baseDate} (${nameCounter[baseDate]})`;
+                        }
+                        
+                        row._tabName = finalTabName; // Lưu tên Tab vào row để lát nữa gọi đúng ID
+                        tabRequests.push({ addSheet: { properties: { title: finalTabName } } });
+                    });
+
+                    // --- BƯỚC 4: TẠO HÀNG LOẠT CÁC TAB ---
+                    console.log(`📑 Đang tạo ${tabRequests.length} Tab riêng biệt (Mỗi Waybill = 1 Tab)...`);
                     await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ requests: tabRequests })
                     });
 
-                    // --- BƯỚC 4: LẤY SHEET ID CHUẨN XÁC ---
+                    // --- BƯỚC 5: LẤY LẠI SHEET ID ---
                     console.log(`🔍 Truy vấn hệ thống để lấy Sheet ID...`);
                     const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
                         method: 'GET',
                         headers: { 'Authorization': `Bearer ${USER_TOKEN}` }
                     });
                     const queryData = await queryRes.json();
-                    if (queryData.code !== 0) throw new Error(`Lỗi truy vấn Sheet ID: ${queryData.msg}`);
-
                     const sheetIdMap = {};
                     if (queryData.data && queryData.data.sheets) {
                         queryData.data.sheets.forEach(sheet => { sheetIdMap[sheet.title] = sheet.sheet_id; });
                     }
 
-                    // --- BƯỚC 5: INSERT DÒNG & BƠM DATA "WAYBILL NUMBER" VÀO B12 ---
-                    console.log(`🚀 Bắt đầu Insert Dòng và ghi Waybill Number vào tọa độ B12...`);
-                    for (const sheetName of sheetNames) {
-                        const rows = groupedByDate[sheetName];
-                        if (rows.length === 0) continue;
-                        
-                        const targetSheetId = sheetIdMap[sheetName];
+                    // --- BƯỚC 6: LẶP QUA TỪNG DÒNG -> INSERT 1 DÒNG -> GHI WAYBILL VÀO B12 ---
+                    console.log(`🚀 Bắt đầu Insert Dòng và ghi Waybill Number vào B12 cho từng Tab...`);
+                    for (const r of rowsData) {
+                        const targetSheetId = sheetIdMap[r._tabName];
                         if (!targetSheetId) continue;
 
-                        // Tìm cột "Waybill Number"
-                        const headers = Object.keys(rows[0]);
-                        const targetKey = headers.find(h => h.toLowerCase().includes('waybill number'));
+                        const wbKey = Object.keys(r).find(k => k.toLowerCase().includes('waybill number'));
+                        const wbValue = wbKey && r[wbKey] ? String(r[wbKey]) : "Không có dữ liệu";
+                        const values = [[wbValue]];
 
-                        // BỎ TIÊU ĐỀ: Chỉ bốc duy nhất giá trị Waybill
-                        const values = [];
-                        rows.forEach(r => {
-                            values.push([ targetKey && r[targetKey] ? String(r[targetKey]) : "Không có dữ liệu" ]);
-                        });
-
-                        if (values.length === 0) continue;
-
-                        // 🛠 TÍNH TOÁN INDEX ĐỂ INSERT (Dòng 12 = Index 11)
-                        const insertStartIndex = 11; 
-                        const insertEndIndex = insertStartIndex + values.length; 
-
-                        console.log(`   ➕ Đang Insert ${values.length} dòng vào vị trí từ Index ${insertStartIndex} đến ${insertEndIndex}`);
-                        
+                        // 🛠 6A: INSERT ĐÚNG 1 DÒNG Ở INDEX 11 (Vị trí dòng 12)
                         await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/insert_dimension_range`, {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                dimension: {
-                                    sheetId: targetSheetId,
-                                    majorDimension: "ROWS",
-                                    startIndex: insertStartIndex,
-                                    endIndex: insertEndIndex
-                                },
+                                dimension: { sheetId: targetSheetId, majorDimension: "ROWS", startIndex: 11, endIndex: 12 },
                                 inheritStyle: "BEFORE"
                             })
                         });
 
-                        // 🛠 GHI DỮ LIỆU WAYBILL XUỐNG TỌA ĐỘ B12
-                        const endRow = 12 + values.length - 1; 
-                        const range = `${targetSheetId}!B12:B${endRow}`;
-
+                        // 🛠 6B: GHI 1 WAYBILL XUỐNG TỌA ĐỘ B12 CỦA TAB ĐÓ
                         const writeRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
                             method: 'PUT',
                             headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ valueRange: { range: range, values: values } })
+                            body: JSON.stringify({ valueRange: { range: `${targetSheetId}!B12:B12`, values: values } })
                         });
                         
                         const writeResult = await writeRes.json();
                         if (writeResult.code === 0) {
-                            console.log(`   ✅ Đã ghi danh sách Waybill Number vào ${range} [Tab: ${sheetName}]`);
+                            console.log(`   ✅ Đã ghi Waybill [${wbValue}] vào Tab [${r._tabName}]`);
                         } else {
-                            console.error(`   ❌ Lỗi ghi dữ liệu [${sheetName}]: ${writeResult.msg}`);
+                            console.error(`   ❌ Lỗi ghi Tab [${r._tabName}]: ${writeResult.msg}`);
                         }
                     }
 
-                    // --- BƯỚC 6: LƯU DB & PHẢN HỒI ---
+                    // --- BƯỚC 7: LƯU DB & PHẢN HỒI ---
                     await connectDB();
                     const newFileEntry = new CsvVault({
                         fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData
@@ -206,9 +190,9 @@ app.post('/webhook/event', async (req, res) => {
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '✅ XỬ LÝ HOÀN TẤT' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: '✅ XỬ LÝ "MỖI DÒNG 1 TAB" HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Tab (Shipment Date):** ${sheetNames.length}\n🚀 **Đã Insert Dòng và ghi danh sách \`Waybill Number\` vào B12.**` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Tab được tạo:** ${rowsData.length} Tab\n🚀 Đã tạo Tab độc lập cho từng Waybill và ghi thành công vào ô **B12**.` } },
                                     {
                                         tag: 'action',
                                         actions: [
