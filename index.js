@@ -7,6 +7,9 @@ const Papa = require('papaparse');
 const app = express();
 app.use(express.json()); 
 
+// ==========================================
+// 1. KẾT NỐI MONGODB
+// ==========================================
 let isConnected = false;
 async function connectDB() {
     if (isConnected) return;
@@ -31,11 +34,11 @@ const client = new lark.Client({
     appSecret: process.env.LARK_APP_SECRET,
 });
 
+// ==========================================
+// 2. XỬ LÝ NHẬN VÀ LẶP FILE CSV
+// ==========================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
-    
-    // 🔴 RADAR: Ghi log toàn bộ gói tin Lark gửi đến vào Vercel
-    console.log("📥 [LARK EVENT NHẬN ĐƯỢC]:", JSON.stringify(data, null, 2));
 
     if (data.type === 'url_verification') {
         return res.status(200).json({ challenge: data.challenge });
@@ -45,43 +48,64 @@ app.post('/webhook/event', async (req, res) => {
         const message = data.event.message;
 
         try {
-            // ----------------------------------------------------------------
-            // 1. NẾU LÀ FILE VẬT LÝ
-            // ----------------------------------------------------------------
             if (message.message_type === 'file') {
                 const fileContent = JSON.parse(message.content);
                 const fileName = fileContent.file_name;
                 const fileKey = fileContent.file_key;
 
-                // 🔴 BƯỚC XÁC NHẬN SỐ 1: Báo cáo ngay lập tức
                 await client.im.message.reply({
                     path: { message_id: message.message_id },
-                    data: { content: JSON.stringify({ text: `📡 Radar xác nhận: Đã nhìn thấy file "${fileName}". Bắt đầu tải và phân tích...` }), msg_type: 'text' }
+                    data: { content: JSON.stringify({ text: `⏳ Đang tải và bóc tách dữ liệu từ file "${fileName}"...` }), msg_type: 'text' }
                 });
 
                 if (fileName.toLowerCase().endsWith('.csv')) {
+                    // Tải file từ Lark về bằng fileKey
                     const fileData = await client.im.messageResource.get({
                         path: { message_id: message.message_id, file_key: fileKey },
                         params: { type: 'file' }
                     });
 
-                    const csvString = Buffer.from(fileData).toString('utf8');
+                    // Parse dữ liệu từ file
+                    const csvString = fileData.toString('utf8');
                     const parsedData = Papa.parse(csvString, { header: true, skipEmptyLines: true });
                     const rows = parsedData.data;
 
                     if (rows.length > 0) {
                         await connectDB();
-                        const recordsToSave = rows.map(row => ({ rowData: row, fileName: fileName }));
-                        await CsvRecord.insertMany(recordsToSave);
+                        let previewText = "";
+                        let successCount = 0;
+
+                        // 🔄 VÒNG LẶP QUA TỪNG ROW CHÍNH XÁC NHƯ YÊU CẦU CỦA BẠN
+                        for (let i = 0; i < rows.length; i++) {
+                            const row = rows[i]; // Lấy dữ liệu của 1 dòng
+                            
+                            // Lưu dòng này vào MongoDB
+                            await CsvRecord.create({ rowData: row, fileName: fileName });
+                            successCount++;
+
+                            // Lấy 3 dòng đầu tiên để in ra cho bạn xem chứng minh bot đã đọc được
+                            if (i < 3) {
+                                // Lấy tất cả các cột của dòng đó gom thành 1 đoạn text
+                                const rowValues = Object.entries(row).map(([key, value]) => `[${key}: ${value}]`).join(' | ');
+                                previewText += `\n👉 Dòng ${i + 1}: ${rowValues}`;
+                            }
+                        }
+
+                        // Xây dựng câu trả lời báo cáo kết quả
+                        let replyMessage = `✅ Đã lặp và lưu thành công ${successCount} dòng!\n`;
+                        replyMessage += `👀 Dưới đây là dữ liệu 3 dòng đầu tiên tôi lấy được:${previewText}`;
+                        if (rows.length > 3) {
+                            replyMessage += `\n... và ${rows.length - 3} dòng nữa đã được lưu an toàn.`;
+                        }
 
                         await client.im.message.reply({
                             path: { message_id: message.message_id },
-                            data: { content: JSON.stringify({ text: `✅ Tuyệt vời! Đã nhập thành công ${rows.length} dòng dữ liệu vào Database.` }), msg_type: 'text' }
+                            data: { content: JSON.stringify({ text: replyMessage }), msg_type: 'text' }
                         });
                     } else {
                         await client.im.message.reply({
                             path: { message_id: message.message_id },
-                            data: { content: JSON.stringify({ text: `❌ File CSV rỗng!` }), msg_type: 'text' }
+                            data: { content: JSON.stringify({ text: `❌ File CSV rỗng, không có dòng nào!` }), msg_type: 'text' }
                         });
                     }
                 } else {
@@ -91,45 +115,17 @@ app.post('/webhook/event', async (req, res) => {
                     });
                 }
             } 
-            // ----------------------------------------------------------------
-            // 2. NẾU LÀ TIN NHẮN CHỮ HOẶC REPLY FILE TRONG NHÓM
-            // ----------------------------------------------------------------
             else if (message.message_type === 'text') {
-                let isReplyFile = false;
-                
-                // Kiểm tra xem có phải đang Reply một file không
-                if (message.parent_id) {
-                    const parentRes = await client.im.message.get({ path: { message_id: message.parent_id } });
-                    if (parentRes.data.items[0].msg_type === 'file') {
-                        isReplyFile = true;
-                        await client.im.message.reply({
-                            path: { message_id: message.message_id },
-                            data: { content: JSON.stringify({ text: `📡 Radar xác nhận: Bạn vừa Reply một file. Để code đơn giản, hiện tại hãy chat 1-1 và ném file thẳng cho tôi nhé!` }), msg_type: 'text' }
-                        });
-                    }
-                }
-
-                if (!isReplyFile) {
-                    await client.im.message.reply({
-                        path: { message_id: message.message_id },
-                        data: { content: JSON.stringify({ text: `👋 Chào bạn! Hãy thả trực tiếp một file .csv vào khung chat này để tôi xử lý.` }), msg_type: 'text' }
-                    });
-                }
-            }
-            // ----------------------------------------------------------------
-            // 3. NẾU LÀ CÁC LOẠI KHÁC (ẢNH, VIDEO, TÀI LIỆU LARK DOCS)
-            // ----------------------------------------------------------------
-            else {
                 await client.im.message.reply({
                     path: { message_id: message.message_id },
-                    data: { content: JSON.stringify({ text: `⚠️ Radar phát hiện: Bạn vừa gửi định dạng "${message.message_type}". Đây không phải là file vật lý, hãy tải xuống thành .csv và gửi lại nhé.` }), msg_type: 'text' }
+                    data: { content: JSON.stringify({ text: `👋 Chào bạn! Hãy ném một file .csv có nhiều dòng vào đây, tôi sẽ loop qua từng dòng cho bạn xem.` }), msg_type: 'text' }
                 });
             }
         } catch (error) {
-            console.error("❌ LỖI NGHIÊM TRỌNG:", error);
+            console.error("❌ LỖI KHI XỬ LÝ:", error);
             await client.im.message.reply({
                 path: { message_id: message.message_id },
-                data: { content: JSON.stringify({ text: `❌ Code bị sập giữa chừng! Hãy xem Vercel Logs.` }), msg_type: 'text' }
+                data: { content: JSON.stringify({ text: `❌ Lỗi rồi! Không thể tải hoặc đọc file. Hãy kiểm tra Vercel Logs.` }), msg_type: 'text' }
             });
         }
     }
