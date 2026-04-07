@@ -10,7 +10,7 @@ app.use(express.json());
 // ==========================================
 // 🔑 TOKEN USER (BẮT BUỘC ĐỂ TẠO VÀ GHI SPREADSHEET)
 // ==========================================
-const USER_TOKEN = "u-dSzpHKprtcaEjR6XpgCR3Pl04Tsqh5UXNgGavxs020k2";
+const USER_TOKEN = "t-g206478S3MT22QWRGGFSAIW6VXVOEE7HLGWN7N6A";
 
 // ==========================================
 // 🛡 BỘ LỌC CHỐNG LARK SPAM
