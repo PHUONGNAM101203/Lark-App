@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json());
 
 // ==========================================
-// 🔑 TOKEN USER (Đảm bảo Token còn hạn)
+// 🔑 TOKEN USER (BẮT BUỘC ĐỂ TẠO VÀ GHI SPREADSHEET)
 // ==========================================
 const USER_TOKEN = "t-g206477nRTN6WHRWMKRNWVCQ457DCZM5LLEWVBAQ";
 
@@ -60,7 +60,7 @@ function getColLetter(index) {
 }
 
 // =====================================================================
-// 🟢 WEBHOOK 1: NHẬN FILE & TẠO SPREADSHEET CÓ MỞ RỘNG KÍCH THƯỚC
+// 🟢 WEBHOOK 1: NHẬN FILE, ĐỌC DATA, TẠO SHEET, MỞ RỘNG DÒNG/CỘT
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
@@ -86,8 +86,8 @@ app.post('/webhook/event', async (req, res) => {
                 if (file_name.toLowerCase().endsWith('.csv')) {
                     console.log(`\n========================================`);
                     console.log(`📂 BẮT ĐẦU XỬ LÝ FILE: ${file_name}`);
-                    
-                    // --- 1. TẢI FILE & ĐỌC DỮ LIỆU ---
+
+                    // --- BƯỚC 1: LẤY TOKEN & TẢI FILE ---
                     const tokenRes = await client.auth.tenantAccessToken.internal({
                         data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }
                     });
@@ -106,7 +106,7 @@ app.post('/webhook/event', async (req, res) => {
                     });
                     const rowsData = parsed.data;
 
-                    // --- 2. GỘP NHÓM THEO SHIPMENT DATE ---
+                    // --- BƯỚC 2: GỘP NHÓM THEO SHIPMENT DATE ---
                     const groupedByDate = {};
                     rowsData.forEach(row => {
                         const dateKey = Object.keys(row).find(k => k.toLowerCase().includes('shipment date'));
@@ -117,7 +117,7 @@ app.post('/webhook/event', async (req, res) => {
                         groupedByDate[dateVal].push(row);
                     });
 
-                    // --- 3. TẠO SPREADSHEET MỚI ---
+                    // --- BƯỚC 3: TẠO SPREADSHEET MỚI ---
                     console.log(`📝 Đang tạo Lark Spreadsheet...`);
                     const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
                         method: 'POST',
@@ -130,30 +130,36 @@ app.post('/webhook/event', async (req, res) => {
                     const ssToken = createData.data.spreadsheet.spreadsheet_token;
                     const ssUrl = createData.data.spreadsheet.url;
 
-                    // --- 4. TẠO TẤT CẢ CÁC TAB VÀ LẤY SHEET_ID ---
+                    // --- BƯỚC 4: TẠO CÁC TAB (SHEETS) THEO NGÀY ---
                     const sheetNames = Object.keys(groupedByDate);
-                    console.log(`📑 Đang tạo ${sheetNames.length} Tab theo ngày...`);
+                    console.log(`📑 Đang tạo ${sheetNames.length} Tab...`);
                     const tabRequests = sheetNames.map(name => ({ addSheet: { properties: { title: name } } }));
                     
-                    const batchRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
+                    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ requests: tabRequests })
                     });
-                    const batchData = await batchRes.json();
 
-                    // Bóc tách Sheet_ID của từng Tab vừa tạo (để phục vụ việc thêm Dòng/Cột)
+                    // --- BƯỚC 4.5: LẤY LẠI DANH SÁCH SHEET ID (API BẠN CUNG CẤP) ---
+                    console.log(`🔍 Truy vấn hệ thống để lấy Sheet ID chuẩn xác...`);
+                    const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
+                        method: 'GET',
+                        headers: { 'Authorization': `Bearer ${USER_TOKEN}` }
+                    });
+                    const queryData = await queryRes.json();
+                    if (queryData.code !== 0) throw new Error(`Lỗi truy vấn Sheet ID: ${queryData.msg}`);
+
+                    // Ánh xạ Tên Tab -> Sheet ID
                     const sheetIdMap = {};
-                    if (batchData.data && batchData.data.replies) {
-                        batchData.data.replies.forEach(reply => {
-                            if (reply.addSheet && reply.addSheet.properties) {
-                                sheetIdMap[reply.addSheet.properties.title] = reply.addSheet.properties.sheetId;
-                            }
+                    if (queryData.data && queryData.data.sheets) {
+                        queryData.data.sheets.forEach(sheet => {
+                            sheetIdMap[sheet.title] = sheet.sheet_id;
                         });
                     }
 
-                    // --- 5. BƠM DỮ LIỆU (CÓ CƠ CHẾ TỰ ĐỘNG THÊM DÒNG/CỘT) ---
-                    console.log(`🚀 Bắt đầu đo đạc và bơm dữ liệu...`);
+                    // --- BƯỚC 5: ĐO ĐẠC, THÊM DÒNG/CỘT VÀ BƠM DỮ LIỆU ---
+                    console.log(`🚀 Bắt đầu đo đạc và bơm dữ liệu vào Sheet...`);
                     for (const sheetName of sheetNames) {
                         const rows = groupedByDate[sheetName];
                         if (rows.length === 0) continue;
@@ -163,12 +169,14 @@ app.post('/webhook/event', async (req, res) => {
                         rows.forEach(r => values.push(headers.map(h => r[h] !== null && r[h] !== undefined ? String(r[h]) : "")));
 
                         const targetSheetId = sheetIdMap[sheetName];
+                        if (!targetSheetId) {
+                            console.error(`   ❌ Bỏ qua [${sheetName}]: Không tìm thấy Sheet ID.`);
+                            continue;
+                        }
 
-                        // 🛠 BƯỚC 5A: THÊM DÒNG (Nếu dữ liệu > 200 dòng mặc định)
-                        if (targetSheetId && values.length > 200) {
-                            let rowsToAdd = values.length - 200 + 5; // Cộng dư 5 dòng cho thoải mái
-                            
-                            // API chỉ cho thêm max 4999 dòng 1 lần, dùng vòng lặp để add nếu data cực lớn
+                        // 🛠 BƯỚC 5A: THÊM DÒNG (Dựa vào Sheet_ID)
+                        if (values.length > 200) {
+                            let rowsToAdd = values.length - 200 + 5;
                             while (rowsToAdd > 0) {
                                 const addLength = Math.min(rowsToAdd, 4999);
                                 await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/dimension_range`, {
@@ -180,11 +188,11 @@ app.post('/webhook/event', async (req, res) => {
                                 });
                                 rowsToAdd -= addLength;
                             }
-                            console.log(`   ➕ Đã thêm dòng cho Sheet [${sheetName}]`);
+                            console.log(`   ➕ Đã nới rộng Dòng cho Tab [${sheetName}]`);
                         }
 
-                        // 🛠 BƯỚC 5B: THÊM CỘT (Nếu dữ liệu > 20 cột mặc định)
-                        if (targetSheetId && headers.length > 20) {
+                        // 🛠 BƯỚC 5B: THÊM CỘT (Dựa vào Sheet_ID)
+                        if (headers.length > 20) {
                             let colsToAdd = headers.length - 20 + 2;
                             await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/dimension_range`, {
                                 method: 'POST',
@@ -193,7 +201,7 @@ app.post('/webhook/event', async (req, res) => {
                                     dimension: { sheetId: targetSheetId, majorDimension: "COLUMNS", length: colsToAdd }
                                 })
                             });
-                            console.log(`   ➕ Đã thêm cột cho Sheet [${sheetName}]`);
+                            console.log(`   ➕ Đã nới rộng Cột cho Tab [${sheetName}]`);
                         }
 
                         // 🛠 BƯỚC 5C: BƠM DỮ LIỆU
@@ -208,13 +216,13 @@ app.post('/webhook/event', async (req, res) => {
                         
                         const writeResult = await writeRes.json();
                         if (writeResult.code === 0) {
-                            console.log(`   ✅ Ghi thành công data vào [${sheetName}]`);
+                            console.log(`   ✅ Ghi thành công dữ liệu vào [${sheetName}]`);
                         } else {
                             console.error(`   ❌ Lỗi ghi [${sheetName}]: ${writeResult.msg}`);
                         }
                     }
 
-                    // --- 6. LƯU MONGODB & TRẢ LỜI ---
+                    // --- BƯỚC 6: LƯU MONGODB & BÁO CÁO LARK ---
                     await connectDB();
                     const newFileEntry = new CsvVault({
                         fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData
@@ -226,9 +234,9 @@ app.post('/webhook/event', async (req, res) => {
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '✅ TẠO SHEET HOÀN TẤT' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: '✅ HOÀN TẤT XỬ LÝ & TẠO SPREADSHEET' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Shipment Date:** ${sheetNames.length}\n🗂️ **Tổng dòng dữ liệu:** ${rowsData.length}\n*(Đã tự động cơi nới mở rộng Bảng tính)*` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Shipment Date:** ${sheetNames.length}\n🗂️ **Tổng dữ liệu:** ${rowsData.length} dòng\n*(Hệ thống đã đo đạc và tự động mở rộng bảng)*` } },
                                     {
                                         tag: 'action',
                                         actions: [
@@ -240,14 +248,14 @@ app.post('/webhook/event', async (req, res) => {
                             })
                         }
                     });
-                    console.log(`🎉 HOÀN THÀNH QUY TRÌNH!\n========================================`);
+                    console.log(`🎉 QUY TRÌNH HOÀN TẤT THÀNH CÔNG!\n========================================`);
                 }
             }
         } catch (error) {
-            console.error("\n❌ LỖI NGHIÊM TRỌNG:", error.message);
+            console.error("\n❌ LỖI HỆ THỐNG:", error.message);
             await client.im.message.reply({
                 path: { message_id: message.message_id },
-                data: { msg_type: 'text', content: JSON.stringify({ text: `❌ Lỗi hệ thống: ${error.message}` }) }
+                data: { msg_type: 'text', content: JSON.stringify({ text: `❌ Lỗi xử lý: ${error.message}` }) }
             });
         }
     }
@@ -255,7 +263,7 @@ app.post('/webhook/event', async (req, res) => {
 });
 
 // =====================================================================
-// 🔵 WEBHOOK 2: XỬ LÝ NÚT BẤM
+// 🔵 WEBHOOK 2: XÓA DỮ LIỆU
 // =====================================================================
 app.post('/webhook/card', async (req, res) => {
     const data = req.body || {};
