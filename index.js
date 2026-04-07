@@ -3,9 +3,18 @@ const express = require('express');
 const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 const Papa = require('papaparse'); 
+const fs = require('fs'); // Thêm để xử lý file
+const path = require('path'); // Thêm để xử lý đường dẫn
 
 const app = express();
 app.use(express.json()); 
+
+// 📁 Cấu hình thư mục lưu trữ file
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR);
+    console.log('📁 Đã tạo thư mục uploads');
+}
 
 // ==========================================
 // KẾT NỐI MONGODB
@@ -25,6 +34,7 @@ async function connectDB() {
 const CsvDataSchema = new mongoose.Schema({
     rowData: mongoose.Schema.Types.Mixed,
     fileName: String,
+    localPath: String, // Lưu thêm đường dẫn file cục bộ
     importedAt: { type: Date, default: Date.now }
 });
 const CsvRecord = mongoose.model('CsvRecord', CsvDataSchema, 'csv_imports');
@@ -34,60 +44,76 @@ const client = new lark.Client({
     appSecret: process.env.LARK_APP_SECRET,
 });
 
-
 // =====================================================================
-// 🟢 WEBHOOK 1: CHUYÊN XỬ LÝ SỰ KIỆN (Nhận tin nhắn, Nhận File)
-// Link sử dụng: https://[ten-app-cua-ban].vercel.app/webhook/event
+// 🟢 WEBHOOK 1: XỬ LÝ NHẬN FILE & LƯU TRỮ CỤC BỘ
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
-    console.log("📥 [WEBHOOK 1 - EVENT] Nhận tín hiệu:", JSON.stringify(data.header || data, null, 2));
 
-    // Vượt qua vòng kiểm tra của Lark
     if (data.type === 'url_verification') {
         return res.status(200).json({ challenge: data.challenge });
     }
 
-    // Xử lý khi có người gửi file CSV
     if (data.header && data.header.event_type === 'im.message.receive_v1') {
         const message = data.event.message;
         try {
             if (message.message_type === 'file') {
-                const fileContent = JSON.parse(message.content);
-                const fileName = fileContent.file_name;
-                const fileKey = fileContent.file_key;
+                const fileContentInfo = JSON.parse(message.content);
+                const fileName = fileContentInfo.file_name;
+                const fileKey = fileContentInfo.file_key;
 
                 if (fileName.toLowerCase().endsWith('.csv')) {
-                    const fileData = await client.im.messageResource.get({
+                    console.log(`🚀 Bắt đầu xử lý file: ${fileName}`);
+
+                    // 1. Tải file từ server Lark về (trả về Buffer)
+                    const fileBuffer = await client.im.messageResource.get({
                         path: { message_id: message.message_id, file_key: fileKey },
                         params: { type: 'file' }
                     });
 
-                    const csvString = fileData.toString('utf8');
-                    const parsedData = Papa.parse(csvString, { header: true, skipEmptyLines: true });
+                    // 2. Lưu file vật lý vào thư mục /uploads
+                    // Thêm timestamp vào tên file để tránh trùng lặp
+                    const safeFileName = `${Date.now()}_${fileName}`;
+                    const filePath = path.join(UPLOAD_DIR, safeFileName);
+                    
+                    fs.writeFileSync(filePath, fileBuffer);
+                    console.log(`💾 Đã lưu file tại: ${filePath}`);
+
+                    // 3. Dùng PapaParse đọc file từ thư mục vừa lưu
+                    const csvContent = fs.readFileSync(filePath, 'utf8');
+                    const parsedData = Papa.parse(csvContent, { 
+                        header: true, 
+                        skipEmptyLines: true,
+                        dynamicTyping: true // Tự động chuyển số/ngày tháng đúng kiểu
+                    });
+
                     const rows = parsedData.data;
 
                     if (rows.length > 0) {
                         await connectDB();
-                        const recordsToSave = rows.map(row => ({ rowData: row, fileName: fileName }));
+                        const recordsToSave = rows.map(row => ({ 
+                            rowData: row, 
+                            fileName: fileName,
+                            localPath: filePath 
+                        }));
                         await CsvRecord.insertMany(recordsToSave);
 
-                        // Gửi thẻ Card để Test Webhook 2
+                        // 4. Phản hồi cho người dùng qua Lark Card
                         await client.im.message.reply({
                             path: { message_id: message.message_id },
                             data: {
                                 msg_type: 'interactive',
                                 content: JSON.stringify({
-                                    header: { title: { tag: 'plain_text', content: '✅ Import Thành Công!' }, template: "green" },
+                                    header: { title: { tag: 'plain_text', content: '📂 Đã Lưu File & Data' }, template: "blue" },
                                     elements: [
-                                        { tag: 'div', text: { tag: 'lark_md', content: `Đã lưu thành công **${rows.length}** dòng dữ liệu từ file ${fileName}.` } },
+                                        { tag: 'div', text: { tag: 'lark_md', content: `📝 **Tên file:** ${fileName}\n📍 **Vị trí lưu:** \`/uploads/${safeFileName}\` \n📊 **Số dòng:** ${rows.length}` } },
                                         {
                                             tag: 'action',
                                             actions: [{
                                                 tag: 'button',
-                                                text: { tag: 'plain_text', content: '🗑️ Xóa dữ liệu vừa nhập' },
+                                                text: { tag: 'plain_text', content: '🗑️ Xóa dữ liệu' },
                                                 type: 'danger',
-                                                value: { action: 'delete_recent', targetFile: fileName }
+                                                value: { action: 'delete_recent', targetFile: fileName, pathToDelete: filePath }
                                             }]
                                         }
                                     ]
@@ -96,52 +122,43 @@ app.post('/webhook/event', async (req, res) => {
                         });
                     }
                 }
-            } 
-            else if (message.message_type === 'text') {
-                await client.im.message.reply({
-                    path: { message_id: message.message_id },
-                    data: { content: JSON.stringify({ text: `Hệ thống chia luồng đã sẵn sàng! Hãy ném file CSV vào đây.` }), msg_type: 'text' }
-                });
             }
         } catch (error) {
-            console.error("❌ LỖI WEBHOOK 1:", error);
+            console.error("❌ LỖI XỬ LÝ FILE:", error);
         }
     }
     return res.status(200).json({ success: true });
 });
 
-
 // =====================================================================
-// 🔵 WEBHOOK 2: CHUYÊN XỬ LÝ NÚT BẤM (Card Callback)
-// Link sử dụng: https://[ten-app-cua-ban].vercel.app/webhook/card
+// 🔵 WEBHOOK 2: XỬ LÝ NÚT BẤM (Xóa cả DB và File vật lý)
 // =====================================================================
 app.post('/webhook/card', async (req, res) => {
     const data = req.body || {};
-    console.log("👆 [WEBHOOK 2 - CARD CALLBACK] Có lượt bấm nút:", JSON.stringify(data, null, 2));
 
-    // Vượt qua vòng kiểm tra của Lark cho Card
-    if (data.type === 'url_verification') {
-        return res.status(200).json({ challenge: data.challenge });
-    }
-
-    // Khi người dùng bấm nút "Xóa dữ liệu vừa nhập"
     if (data.action && data.action.value && data.action.value.action === 'delete_recent') {
-        await connectDB();
-        const fName = data.action.value.targetFile;
+        const { targetFile, pathToDelete } = data.action.value;
         
-        // Xóa các record có tên file tương ứng
-        await CsvRecord.deleteMany({ fileName: fName });
-        console.log(`Đã xóa dữ liệu của file: ${fName}`);
+        try {
+            await connectDB();
+            // Xóa trong Database
+            await CsvRecord.deleteMany({ fileName: targetFile });
 
-        // Trả về thông báo Popup (Toast) ngay trên màn hình Lark
-        return res.status(200).json({
-            toast: {
-                type: 'info',
-                content: `Đã dọn dẹp sạch sẽ dữ liệu của ${fName} khỏi Database!`
+            // Xóa file vật lý trong thư mục uploads
+            if (fs.existsSync(pathToDelete)) {
+                fs.unlinkSync(pathToDelete);
+                console.log(`🗑️ Đã xóa file vật lý: ${pathToDelete}`);
             }
-        });
-    }
 
+            return res.status(200).json({
+                toast: { type: 'success', content: `Đã xóa sạch dữ liệu và file ${targetFile}!` }
+            });
+        } catch (err) {
+            return res.status(200).json({
+                toast: { type: 'error', content: `Lỗi khi xóa: ${err.message}` }
+            });
+        }
+    }
     return res.status(200).json({ success: true });
 });
 
