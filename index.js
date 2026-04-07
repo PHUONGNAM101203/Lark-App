@@ -8,9 +8,9 @@ const app = express();
 app.use(express.json());
 
 // ==========================================
-// 🔑 TOKEN USER (Đảm bảo còn hạn)
+// 🔑 TOKEN USER (Đảm bảo Token còn hạn)
 // ==========================================
-const USER_TOKEN = "t-g206478S3MT22QWRGGFSAIW6VXVOEE7HLGWN7N6A";
+const USER_TOKEN = "u-dSzpHKprtcaEjR6XpgCR3Pl04Tsqh5UXNgGavxs020k2";
 
 const processedEvents = new Set();
 
@@ -135,8 +135,8 @@ app.post('/webhook/event', async (req, res) => {
                         queryData.data.sheets.forEach(sheet => { sheetIdMap[sheet.title] = sheet.sheet_id; });
                     }
 
-                    // --- BƯỚC 5: INSERT DÒNG & BƠM DATA "EMAIL" VÀO B12 ---
-                    console.log(`🚀 Bắt đầu TEST hàm Insert Rows và ghi Email vào B12...`);
+                    // --- BƯỚC 5: INSERT DÒNG & BƠM DATA VÀO B12 ---
+                    console.log(`🚀 Bắt đầu TEST hàm Insert Rows và ghi Recipient Name vào B12...`);
                     for (const sheetName of sheetNames) {
                         const rows = groupedByDate[sheetName];
                         if (rows.length === 0) continue;
@@ -144,20 +144,19 @@ app.post('/webhook/event', async (req, res) => {
                         const targetSheetId = sheetIdMap[sheetName];
                         if (!targetSheetId) continue;
 
-                        // Tìm xem cột Email nằm ở đâu trong CSV
+                        // Tìm cột "Recipient Name"
                         const headers = Object.keys(rows[0]);
-                        const emailKey = headers.find(h => h.toLowerCase().includes('email'));
+                        const targetKey = headers.find(h => h.toLowerCase().includes('recipient name'));
 
-                        // Chỉ lấy đúng cột Email, nếu file CSV không có cột Email thì điền "Không có dữ liệu Email"
+                        // BỎ TIÊU ĐỀ: Chỉ bốc duy nhất giá trị (List)
                         const values = [];
-                        values.push(["Danh Sách Email"]); // Dòng Tiêu đề
                         rows.forEach(r => {
-                            values.push([ emailKey && r[emailKey] ? String(r[emailKey]) : "Không có dữ liệu Email" ]);
+                            values.push([ targetKey && r[targetKey] ? String(r[targetKey]) : "Không có dữ liệu" ]);
                         });
 
-                        // 🛠 TÍNH TOÁN INDEX ĐỂ INSERT
-                        // Dòng 12 = Index 11. 
-                        // End Index = Start Index + Số dòng cần chèn
+                        if (values.length === 0) continue;
+
+                        // 🛠 TÍNH TOÁN INDEX ĐỂ INSERT (Dòng 12 = Index 11)
                         const insertStartIndex = 11; 
                         const insertEndIndex = insertStartIndex + values.length; 
 
@@ -181,8 +180,8 @@ app.post('/webhook/event', async (req, res) => {
                             console.error(`   ❌ Lỗi Insert Dòng: ${insertData.msg}`);
                         }
 
-                        // 🛠 GHI DỮ LIỆU EMAIL XUỐNG TỌA ĐỘ B12
-                        // Vì chúng ta chỉ ghi 1 cột (Email), nên Range kết thúc cũng là cột B
+                        // 🛠 GHI DỮ LIỆU XUỐNG TỌA ĐỘ B12
+                        // Độ dài range = B12 đến B(12 + số lượng list - 1)
                         const endRow = 12 + values.length - 1; 
                         const range = `${targetSheetId}!B12:B${endRow}`;
 
@@ -194,9 +193,9 @@ app.post('/webhook/event', async (req, res) => {
                         
                         const writeResult = await writeRes.json();
                         if (writeResult.code === 0) {
-                            console.log(`   ✅ Đã ghi danh sách Email vào tọa độ ${range} [${sheetName}]`);
+                            console.log(`   ✅ Đã ghi danh sách Recipient Name vào tọa độ ${range} [${sheetName}]`);
                         } else {
-                            console.error(`   ❌ Lỗi ghi Email [${sheetName}]: ${writeResult.msg}`);
+                            console.error(`   ❌ Lỗi ghi dữ liệu [${sheetName}]: ${writeResult.msg}`);
                         }
                     }
 
@@ -212,9 +211,9 @@ app.post('/webhook/event', async (req, res) => {
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '✅ TEST INSERT HOÀN TẤT' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: '✅ TẠO SHEET HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n🚀 Đã thực hiện chèn (Insert) dòng từ **Index 11**.\n🎯 Đã ghi cột Email vào tọa độ **B12**.` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n🚀 Đã chèn (Insert) dòng từ **Index 11**.\n🎯 Đã ghi danh sách \`Recipient Name\` vào tọa độ **B12** (Không có tiêu đề).` } },
                                     {
                                         tag: 'action',
                                         actions: [
@@ -226,7 +225,7 @@ app.post('/webhook/event', async (req, res) => {
                             })
                         }
                     });
-                    console.log(`🎉 HOÀN TẤT BÀI TEST INSERT!\n========================================`);
+                    console.log(`🎉 HOÀN TẤT BÀI TEST!\n========================================`);
                 }
             }
         } catch (error) {
