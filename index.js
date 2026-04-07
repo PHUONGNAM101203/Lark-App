@@ -10,7 +10,7 @@ app.use(express.json());
 // ==========================================
 // THẺ BÀI USER (Token bạn cung cấp)
 // ==========================================
-const USER_TOKEN = "u-dSzpHKprtcaEjR6XpgCR3Pl04Tsqh5UXNgGavxs020k2";
+const USER_TOKEN = "u-feFCdznf94C9pR1EUToqfCg06iHqh5oNrw0GeAk02ETM";
 
 // ==========================================
 // 1. BỘ LỌC CHỐNG TRÙNG LẶP SỰ KIỆN
