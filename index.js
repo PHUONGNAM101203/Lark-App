@@ -10,7 +10,7 @@ app.use(express.json());
 // ==========================================
 // 🔑 TOKEN USER (BẮT BUỘC ĐỂ TẠO VÀ GHI SPREADSHEET)
 // ==========================================
-const USER_TOKEN = "t-g206477nRTN6WHRWMKRNWVCQ457DCZM5LLEWVBAQ";
+const USER_TOKEN = "u-dSzpHKprtcaEjR6XpgCR3Pl04Tsqh5UXNgGavxs020k2";
 
 // ==========================================
 // 🛡 BỘ LỌC CHỐNG LARK SPAM
@@ -50,6 +50,7 @@ const client = new lark.Client({
     appSecret: process.env.LARK_APP_SECRET,
 });
 
+// ✅ HÀM BỔ TRỢ: Tính chữ cái của cột Excel (Ví dụ: 0 -> A, 1 -> B, 26 -> AA)
 function getColLetter(index) {
     let letter = '';
     while (index >= 0) {
@@ -65,10 +66,12 @@ function getColLetter(index) {
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
 
+    // 1. Xác thực bảo mật Lark
     if (data.type === 'url_verification') {
         return res.status(200).json({ challenge: data.challenge });
     }
 
+    // 2. Chặn Lark gửi lặp sự kiện
     const eventId = data.header && data.header.event_id;
     if (eventId) {
         if (processedEvents.has(eventId)) return res.status(200).json({ success: true });
@@ -76,6 +79,7 @@ app.post('/webhook/event', async (req, res) => {
         setTimeout(() => processedEvents.delete(eventId), 10 * 60 * 1000);
     }
 
+    // 3. Xử lý logic chính
     if (data.header && data.header.event_type === 'im.message.receive_v1') {
         const message = data.event.message;
 
@@ -87,7 +91,7 @@ app.post('/webhook/event', async (req, res) => {
                     console.log(`\n========================================`);
                     console.log(`📂 BẮT ĐẦU XỬ LÝ FILE: ${file_name}`);
 
-                    // --- BƯỚC 1: LẤY TOKEN & TẢI FILE ---
+                    // --- BƯỚC 1: LẤY TOKEN & TẢI FILE TRỰC TIẾP ---
                     const tokenRes = await client.auth.tenantAccessToken.internal({
                         data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }
                     });
@@ -101,28 +105,31 @@ app.post('/webhook/event', async (req, res) => {
                     let csvString = fileBuffer.toString('utf-8').replace(/^\uFEFF/, '');
                     if (!csvString.trim()) throw new Error("File rỗng.");
 
+                    // --- BƯỚC 2: BÓC TÁCH DỮ LIỆU ---
                     const parsed = Papa.parse(csvString, {
                         header: true, skipEmptyLines: 'greedy', dynamicTyping: true, transformHeader: (h) => h.trim()
                     });
                     const rowsData = parsed.data;
 
-                    // --- BƯỚC 2: GỘP NHÓM THEO SHIPMENT DATE ---
+                    // --- BƯỚC 3: GỘP NHÓM THEO "SHIPMENT DATE" ---
                     const groupedByDate = {};
                     rowsData.forEach(row => {
                         const dateKey = Object.keys(row).find(k => k.toLowerCase().includes('shipment date'));
                         let dateVal = dateKey && row[dateKey] ? String(row[dateKey]).trim() : 'Unknown_Date';
+                        
+                        // Làm sạch tên Tab (không được chứa các ký tự đặc biệt)
                         dateVal = dateVal.replace(/[\\/?*[\]:]/g, '-').substring(0, 31);
                         
                         if (!groupedByDate[dateVal]) groupedByDate[dateVal] = [];
                         groupedByDate[dateVal].push(row);
                     });
 
-                    // --- BƯỚC 3: TẠO SPREADSHEET MỚI ---
+                    // --- BƯỚC 4: TẠO SPREADSHEET TRÊN LARK ---
                     console.log(`📝 Đang tạo Lark Spreadsheet...`);
                     const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: `Báo Cáo: ${file_name}` })
+                        body: JSON.stringify({ title: `Báo Cáo Shipment: ${file_name}` })
                     });
                     const createData = await createRes.json();
                     if (createData.code !== 0) throw new Error(`Lỗi tạo Spreadsheet: ${createData.msg}`);
@@ -130,7 +137,7 @@ app.post('/webhook/event', async (req, res) => {
                     const ssToken = createData.data.spreadsheet.spreadsheet_token;
                     const ssUrl = createData.data.spreadsheet.url;
 
-                    // --- BƯỚC 4: TẠO CÁC TAB (SHEETS) THEO NGÀY ---
+                    // --- BƯỚC 5: TẠO CÁC TAB (SHEETS) THEO NGÀY ---
                     const sheetNames = Object.keys(groupedByDate);
                     console.log(`📑 Đang tạo ${sheetNames.length} Tab...`);
                     const tabRequests = sheetNames.map(name => ({ addSheet: { properties: { title: name } } }));
@@ -141,7 +148,7 @@ app.post('/webhook/event', async (req, res) => {
                         body: JSON.stringify({ requests: tabRequests })
                     });
 
-                    // --- BƯỚC 4.5: LẤY LẠI DANH SÁCH SHEET ID (API BẠN CUNG CẤP) ---
+                    // --- BƯỚC 6: LẤY LẠI DANH SÁCH SHEET ID ---
                     console.log(`🔍 Truy vấn hệ thống để lấy Sheet ID chuẩn xác...`);
                     const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
                         method: 'GET',
@@ -158,7 +165,7 @@ app.post('/webhook/event', async (req, res) => {
                         });
                     }
 
-                    // --- BƯỚC 5: ĐO ĐẠC, THÊM DÒNG/CỘT VÀ BƠM DỮ LIỆU ---
+                    // --- BƯỚC 7: ĐO ĐẠC, THÊM DÒNG/CỘT VÀ BƠM DỮ LIỆU ---
                     console.log(`🚀 Bắt đầu đo đạc và bơm dữ liệu vào Sheet...`);
                     for (const sheetName of sheetNames) {
                         const rows = groupedByDate[sheetName];
@@ -174,7 +181,7 @@ app.post('/webhook/event', async (req, res) => {
                             continue;
                         }
 
-                        // 🛠 BƯỚC 5A: THÊM DÒNG (Dựa vào Sheet_ID)
+                        // 🛠 7A: THÊM DÒNG (Nếu dữ liệu > 200 dòng)
                         if (values.length > 200) {
                             let rowsToAdd = values.length - 200 + 5;
                             while (rowsToAdd > 0) {
@@ -191,7 +198,7 @@ app.post('/webhook/event', async (req, res) => {
                             console.log(`   ➕ Đã nới rộng Dòng cho Tab [${sheetName}]`);
                         }
 
-                        // 🛠 BƯỚC 5B: THÊM CỘT (Dựa vào Sheet_ID)
+                        // 🛠 7B: THÊM CỘT (Nếu dữ liệu > 20 cột)
                         if (headers.length > 20) {
                             let colsToAdd = headers.length - 20 + 2;
                             await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/dimension_range`, {
@@ -204,9 +211,9 @@ app.post('/webhook/event', async (req, res) => {
                             console.log(`   ➕ Đã nới rộng Cột cho Tab [${sheetName}]`);
                         }
 
-                        // 🛠 BƯỚC 5C: BƠM DỮ LIỆU
+                        // 🛠 7C: BƠM DỮ LIỆU (Sử dụng targetSheetId thay vì sheetName để chống lỗi tên Tab)
                         const endColLetter = getColLetter(headers.length - 1);
-                        const range = `${sheetName}!A1:${endColLetter}${values.length}`;
+                        const range = `${targetSheetId}!A1:${endColLetter}${values.length}`;
 
                         const writeRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
                             method: 'PUT',
@@ -222,7 +229,7 @@ app.post('/webhook/event', async (req, res) => {
                         }
                     }
 
-                    // --- BƯỚC 6: LƯU MONGODB & BÁO CÁO LARK ---
+                    // --- BƯỚC 8: LƯU MONGODB & BÁO CÁO LARK ---
                     await connectDB();
                     const newFileEntry = new CsvVault({
                         fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData
@@ -236,7 +243,7 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '✅ HOÀN TẤT XỬ LÝ & TẠO SPREADSHEET' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Shipment Date:** ${sheetNames.length}\n🗂️ **Tổng dữ liệu:** ${rowsData.length} dòng\n*(Hệ thống đã đo đạc và tự động mở rộng bảng)*` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Shipment Date:** ${sheetNames.length}\n🗂️ **Tổng dữ liệu:** ${rowsData.length} dòng\n*(Hệ thống đã tự động đo đạc và mở rộng bảng)*` } },
                                     {
                                         tag: 'action',
                                         actions: [
