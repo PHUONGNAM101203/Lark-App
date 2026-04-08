@@ -54,7 +54,7 @@ const INVOICE_TEMPLATE = [
     ["Email", "", "", "", "", ""], 
     ["Phone", "", "", "", "", ""], 
     ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"], 
-    ["1", "", "Pair", "30", "", "0.0"], // Mặc định giá 30
+    ["1", "", "Pair", "30", "", "0.0"], // Giá mặc định 30
     ["Total", "", "", "", "0", "0.0"], 
     ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""] 
 ];
@@ -108,7 +108,7 @@ app.post('/webhook/event', async (req, res) => {
 
                         // 🛠 TÍNH TOÁN: Amount = 30 * Qty
                         const numericQty = parseFloat(qtyVal) || 1;
-                        const totalAmount = (30 * numericQty).toFixed(1); // Ra số đẹp (VD: 30.0, 60.0)
+                        const totalAmount = (30 * numericQty).toFixed(1); 
 
                         return {
                             waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random()*1000)}`,
@@ -119,10 +119,8 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
                                 { val: ProductName, range: "B17:B17" }, 
-                                // Bắn số liệu vào dòng 17 (Sản phẩm)
                                 { val: qtyVal, range: "E17:E17" },           
                                 { val: totalAmount, range: "F17:F17" },      
-                                // Bắn số liệu chốt hạ xuống dòng 18 (Total)
                                 { val: qtyVal, range: "E18:E18" },           
                                 { val: totalAmount, range: "F18:F18" }       
                             ]
@@ -157,23 +155,49 @@ app.post('/webhook/event', async (req, res) => {
                         const targetId = sheetIdMap[r.waybillNumber];
                         if (!targetId) continue;
 
-                        // 1. Dán Template
+                        // BƯỚC 1. Dán Template chữ thô
                         await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
                             method: 'PUT',
                             headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 2. Định Dạng Style (Đã bỏ fontSize để chạy mượt 100%)
+                        // BƯỚC 2. ĐIỀN DỮ LIỆU ĐÃ TÍNH TOÁN VÀO FORM TRƯỚC
+                        const valueRanges = r.fields.filter(f => f.val).map(f => ({
+                            range: `${targetId}!${f.range}`, values: [[f.val]]
+                        }));
+                        if (valueRanges.length > 0) {
+                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ valueRanges: valueRanges })
+                            });
+                        }
+
+                        // BƯỚC 3. GỘP Ô (Merge Cells)
+                        const mergeRanges = [
+                            `${targetId}!A1:C4`, // Gộp ô Logo
+                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
+                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
+                        ];
+                        for (const mRange of mergeRanges) {
+                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
+                            });
+                        }
+
+                        // BƯỚC 4. ĐỊNH DẠNG STYLE (Đã xóa SẠCH BÓNG fontSize, Tinh chỉnh Alignment)
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
                                 // Căn Giữa & Giữa cho ô Logo 
                                 { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
-                                // In đậm nhãn Buyer, To, Email, Phone
-                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true } } },
-                                // Căn lề trái toàn bộ khu vực Khách hàng
-                                { ranges: [`${targetId}!A12:F15`], style: { hAlign: 1, vAlign: 0 } },
+                                // 🛠 ĐÃ FIX CHUẨN: In đậm & Căn Trái/Trên cho Cột nhãn Buyer -> Phone (A12:A15)
+                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true }, hAlign: 1, vAlign: 1 } },
+                                // 🛠 ĐÃ FIX CHUẨN: Căn Trái & Trên kiên quyết cho nội dung Khách hàng (B12:F15)
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 1 } },
                                 // In đậm & Căn giữa COMMERCIAL INVOICE
                                 { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 2 } },
                                 // In đậm tên Cty và dòng Total
@@ -193,21 +217,7 @@ app.post('/webhook/event', async (req, res) => {
                         const styleLog = await styleRes.json();
                         if(styleLog.code !== 0) debugLogs.push(`❌ Lỗi Style [${r.waybillNumber}]: ${styleLog.msg}`);
 
-                        // 3. Gộp Ô (Merge Cells)
-                        const mergeRanges = [
-                            `${targetId}!A1:C4`, // Gộp ô Logo để chèn ảnh to
-                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
-                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
-                        ];
-                        for (const mRange of mergeRanges) {
-                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
-                                method: 'POST',
-                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
-                            });
-                        }
-
-                        // 4. CHÈN LOGO (Array Byte chuẩn xác)
+                        // BƯỚC 5. CHÈN LOGO
                         try {
                             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
                             if (fs.existsSync(logoPath)) {
@@ -234,19 +244,6 @@ app.post('/webhook/event', async (req, res) => {
                             }
                         } catch (imgErr) {
                             debugLogs.push(`❌ Lỗi catch Logo [${r.waybillNumber}]: ${imgErr.message}`);
-                        }
-
-                        // 5. ĐIỀN DỮ LIỆU CHỐT HẠ VÀO FORM
-                        const valueRanges = r.fields.filter(f => f.val).map(f => ({
-                            range: `${targetId}!${f.range}`, values: [[f.val]]
-                        }));
-
-                        if (valueRanges.length > 0) {
-                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
-                                method: 'POST',
-                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ valueRanges: valueRanges })
-                            });
                         }
                     }
 
