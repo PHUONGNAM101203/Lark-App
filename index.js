@@ -76,6 +76,10 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         body: JSON.stringify({ title })
     });
     const createData = await createRes.json();
+    // 🛡️ SỬA LỖI TẠI ĐÂY: Nếu API Lark báo lỗi (không có data), quăng lỗi rõ ràng thay vì crash
+    if (createData.code !== 0 || !createData.data || !createData.data.spreadsheet) {
+        throw new Error(`Lark từ chối tạo file: ${createData.msg || JSON.stringify(createData)}`);
+    }
     const ssToken = createData.data.spreadsheet.spreadsheet_token;
     const ssUrl = createData.data.spreadsheet.url;
 
@@ -84,6 +88,11 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
     });
     const queryData1 = await queryRes1.json();
+
+    // 🛡️ Check lỗi tiếp
+    if (queryData1.code !== 0 || !queryData1.data || !queryData1.data.sheets) {
+        throw new Error(`Lỗi lấy Sheet Template: ${queryData1.msg || 'Không rõ nguyên nhân'}`);
+    }
     const templateSheetId = queryData1.data.sheets[0].sheet_id;
 
     // 3. CHỈ VẼ FORM, GỘP Ô VÀ CHÈN LOGO 1 LẦN DUY NHẤT LÊN TEMPLATE NÀY
@@ -156,6 +165,10 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     });
     const queryData2 = await queryRes2.json();
     const sheetIdMap = {};
+    // 🛡️ Dùng optional chaining (?.) để đảm bảo không lỗi nếu data rỗng
+    if (queryData2.data?.sheets) {
+        queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
+    }
     queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
 
     // 6. GOM TẤT CẢ DỮ LIỆU CÁ NHÂN VÀ ĐẨY BATCH 1 LẦN DUY NHẤT LÊN TẤT CẢ TABS
@@ -313,7 +326,7 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '⚡ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}\n🚀 **Đã tối ưu:** Nhân bản Template siêu tốc!` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
                                     { tag: 'hr' },
                                     { tag: 'action', actions: actions.slice(0, 5) },
                                     { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
