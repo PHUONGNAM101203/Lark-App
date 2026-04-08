@@ -76,10 +76,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         body: JSON.stringify({ title })
     });
     const createData = await createRes.json();
-    // 🛡️ SỬA LỖI TẠI ĐÂY: Nếu API Lark báo lỗi (không có data), quăng lỗi rõ ràng thay vì crash
-    if (createData.code !== 0 || !createData.data || !createData.data.spreadsheet) {
-        throw new Error(`Lark từ chối tạo file: ${createData.msg || JSON.stringify(createData)}`);
-    }
     const ssToken = createData.data.spreadsheet.spreadsheet_token;
     const ssUrl = createData.data.spreadsheet.url;
 
@@ -88,11 +84,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
     });
     const queryData1 = await queryRes1.json();
-
-    // 🛡️ Check lỗi tiếp
-    if (queryData1.code !== 0 || !queryData1.data || !queryData1.data.sheets) {
-        throw new Error(`Lỗi lấy Sheet Template: ${queryData1.msg || 'Không rõ nguyên nhân'}`);
-    }
     const templateSheetId = queryData1.data.sheets[0].sheet_id;
 
     // 3. CHỈ VẼ FORM, GỘP Ô VÀ CHÈN LOGO 1 LẦN DUY NHẤT LÊN TEMPLATE NÀY
@@ -107,7 +98,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const mergeRanges = [
         `${templateSheetId}!A1:C4`, `${templateSheetId}!A5:F5`, `${templateSheetId}!A6:F6`,
         `${templateSheetId}!A7:F7`, `${templateSheetId}!A8:F8`, `${templateSheetId}!A18:D18`,
-        `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`,
+        `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`, 
         `${templateSheetId}!B14:F14`, `${templateSheetId}!B15:F15`
     ];
     for (const mRange of mergeRanges) {
@@ -165,10 +156,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     });
     const queryData2 = await queryRes2.json();
     const sheetIdMap = {};
-    // 🛡️ Dùng optional chaining (?.) để đảm bảo không lỗi nếu data rỗng
-    if (queryData2.data?.sheets) {
-        queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
-    }
     queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
 
     // 6. GOM TẤT CẢ DỮ LIỆU CÁ NHÂN VÀ ĐẨY BATCH 1 LẦN DUY NHẤT LÊN TẤT CẢ TABS
@@ -276,39 +263,14 @@ app.post('/webhook/event', async (req, res) => {
                     });
 
                     const rowChunks = chunkArray(rowsData, CHUNK_SIZE);
+                    const createdSheets = [];
 
-                    // Báo cho user biết hệ thống đã nhận và đang chia file
-                    await client.im.message.reply({
-                        path: { message_id: message.message_id },
-                        data: {
-                            msg_type: 'text',
-                            content: JSON.stringify({ text: `⏳ Đã nhận ${rowsData.length} đơn.\n🚀 Đang tiến hành tạo ĐỒNG THỜI ${rowChunks.length} file (mỗi file ${CHUNK_SIZE} sheets)...` })
-                        }
-                    });
-
-                    // Chạy SONG SONG (Parallel) tất cả các batch cùng 1 lúc để ép thời gian xuống mức thấp nhất
-                    const promises = rowChunks.map((batchRows, batchIndex) =>
-                        createSpreadsheetForBatch(tenantToken, `Invoices: ${file_name}`, batchIndex, batchRows, debugLogs)
-                            .then(async (batchResult) => {
-                                // GỬI LẦN LƯỢT: File nào chạy xong là gửi link ngay lập tức cho Bot
-                                await client.im.message.reply({
-                                    path: { message_id: message.message_id },
-                                    data: {
-                                        msg_type: 'text',
-                                        content: JSON.stringify({ text: `✅ [Hoàn tất ${batchIndex + 1}/${rowChunks.length}]\n📄 File: ${batchResult.title}\n🔗 Link: ${batchResult.url}` })
-                                    }
-                                });
-                                return batchResult;
-                            })
-                            .catch(err => {
-                                debugLogs.push(`❌ Lỗi ở batch ${batchIndex + 1}: ${err.message}`);
-                                return null;
-                            })
-                    );
-
-                    // Đợi tất cả cùng hoàn thành (Thời gian tổng chỉ bằng thời gian xử lý 1 batch)
-                    const createdSheetsResults = await Promise.all(promises);
-                    const createdSheets = createdSheetsResults.filter(Boolean); // Lọc bỏ những batch bị lỗi nếu có
+                    // Khởi chạy tạo các Batch
+                    for (let batchIndex = 0; batchIndex < rowChunks.length; batchIndex++) {
+                        const batchRows = rowChunks[batchIndex];
+                        const batchResult = await createSpreadsheetForBatch(tenantToken, `Invoices: ${file_name}`, batchIndex, batchRows, debugLogs);
+                        createdSheets.push(batchResult);
+                    }
 
                     await connectDB();
                     await (new CsvVault({ fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData })).save();
@@ -324,9 +286,9 @@ app.post('/webhook/event', async (req, res) => {
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '⚡ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: '⚡ TỐC ĐỘ: TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}\n🚀 **Đã tối ưu:** Nhân bản Template siêu tốc!` } },
                                     { tag: 'hr' },
                                     { tag: 'action', actions: actions.slice(0, 5) },
                                     { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
