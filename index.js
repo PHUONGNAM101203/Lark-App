@@ -54,7 +54,7 @@ const INVOICE_TEMPLATE = [
     ["Email", "", "", "", "", ""], 
     ["Phone", "", "", "", "", ""], 
     ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"], 
-    ["1", "", "Pair", "30", "", "0.0"], // Giá mặc định 30
+    ["1", "", "Pair", "30", "", "0.0"], 
     ["Total", "", "", "", "0", "0.0"], 
     ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""] 
 ];
@@ -106,7 +106,6 @@ app.post('/webhook/event', async (req, res) => {
                         const vietnameseName = translateProductName(englishName);
                         const ProductName = vietnameseName ? `${englishName}\n${vietnameseName}` : englishName;
 
-                        // 🛠 TÍNH TOÁN: Amount = 30 * Qty
                         const numericQty = parseFloat(qtyVal) || 1;
                         const totalAmount = (30 * numericQty).toFixed(1); 
 
@@ -162,7 +161,7 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // BƯỚC 2. ĐIỀN DỮ LIỆU ĐÃ TÍNH TOÁN VÀO FORM TRƯỚC
+                        // BƯỚC 2. ĐIỀN DỮ LIỆU VÀO FORM TRƯỚC
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -174,12 +173,30 @@ app.post('/webhook/event', async (req, res) => {
                             });
                         }
 
-                        // BƯỚC 3. GỘP Ô (Merge Cells)
+                        // 🛠 BƯỚC 3. GỘP Ô THÔNG MINH 
                         const mergeRanges = [
                             `${targetId}!A1:C4`, // Gộp ô Logo
-                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
-                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
+                            // 🚀 ĐÃ THÊM: Gộp 3 dòng Thông tin công ty từ cột A đến F
+                            `${targetId}!A5:F5`, // WILD AND KING COMPANY LIMITED
+                            `${targetId}!A6:F6`, // K10/7B Pham Van Nghi...
+                            `${targetId}!A7:F7`, // Da Nang city, Viet Nam
+                            
+                            `${targetId}!A8:F8`, // Dòng Invoice
+                            `${targetId}!A18:D18`, // Dòng Total
+                            `${targetId}!A19:F19`  // Dòng SAY: US DOLLARS...
                         ];
+
+                        // Gộp ô rẽ nhánh (Chỉ gộp nếu khách hàng có nội dung dài)
+                        const buyerName = r.fields[1].val;
+                        const addressTo = r.fields[2].val;
+                        const emailData = r.fields[3].val;
+                        const phoneData = r.fields[4].val;
+
+                        if (buyerName && buyerName.length > 18) mergeRanges.push(`${targetId}!B12:F12`);
+                        if (addressTo && (addressTo.length > 18 || addressTo.includes('\n'))) mergeRanges.push(`${targetId}!B13:F13`);
+                        if (emailData && emailData.length > 18) mergeRanges.push(`${targetId}!B14:F14`);
+                        if (phoneData && phoneData.length > 18) mergeRanges.push(`${targetId}!B15:F15`);
+
                         for (const mRange of mergeRanges) {
                             await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
                                 method: 'POST',
@@ -188,20 +205,25 @@ app.post('/webhook/event', async (req, res) => {
                             });
                         }
 
-                        // BƯỚC 4. ĐỊNH DẠNG STYLE (Đã xóa SẠCH BÓNG fontSize, Tinh chỉnh Alignment)
+                        // BƯỚC 4. ĐỊNH DẠNG STYLE
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
                                 // Căn Giữa & Giữa cho ô Logo 
                                 { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
-                                // 🛠 ĐÃ FIX CHUẨN: In đậm & Căn Trái/Trên cho Cột nhãn Buyer -> Phone (A12:A15)
-                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true }, hAlign: 1, vAlign: 1 } },
-                                // 🛠 ĐÃ FIX CHUẨN: Căn Trái & Trên kiên quyết cho nội dung Khách hàng (B12:F15)
-                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 1 } },
+                                
+                                // 🚀 ĐÃ THÊM: Ép căn Trái & Trên cho 3 dòng Thông tin công ty (A5, A6, A7) để nó không bị nhảy ra giữa
+                                { ranges: [`${targetId}!A5:F5`], style: { font: { bold: true }, hAlign: 1, vAlign: 1 } },
+                                { ranges: [`${targetId}!A6:F7`], style: { hAlign: 1, vAlign: 1 } },
+
+                                // In đậm nhãn Buyer, To, Email, Phone
+                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true } } },
+                                // Căn lề trái & trên cho toàn bộ khu vực Khách hàng
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0 } },
                                 // In đậm & Căn giữa COMMERCIAL INVOICE
                                 { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 2 } },
-                                // In đậm tên Cty và dòng Total
-                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true } } },
+                                // In đậm dòng Total
+                                { ranges: [`${targetId}!A18:F18`], style: { font: { bold: true } } },
                                 // Kẻ bảng xung quanh Sản phẩm
                                 { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
                                 // Đổ màu nền Xám, In đậm, Căn giữa cho Header Bảng
@@ -209,13 +231,11 @@ app.post('/webhook/event', async (req, res) => {
                             ]
                         };
                         
-                        const styleRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
+                        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
                             method: 'PUT',
                             headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify(stylePayload)
                         });
-                        const styleLog = await styleRes.json();
-                        if(styleLog.code !== 0) debugLogs.push(`❌ Lỗi Style [${r.waybillNumber}]: ${styleLog.msg}`);
 
                         // BƯỚC 5. CHÈN LOGO
                         try {
@@ -230,7 +250,7 @@ app.post('/webhook/event', async (req, res) => {
                                     name: 'logo.png'
                                 };
                                 
-                                const imgRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
+                                await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
                                     method: 'POST',
                                     headers: { 
                                         'Authorization': `Bearer ${tenantToken}`,
@@ -238,9 +258,6 @@ app.post('/webhook/event', async (req, res) => {
                                     }, 
                                     body: JSON.stringify(payload)
                                 });
-                                
-                                const imgLog = await imgRes.json();
-                                if(imgLog.code !== 0) debugLogs.push(`❌ Lỗi Logo [${r.waybillNumber}]: ${imgLog.msg}`);
                             }
                         } catch (imgErr) {
                             debugLogs.push(`❌ Lỗi catch Logo [${r.waybillNumber}]: ${imgErr.message}`);
