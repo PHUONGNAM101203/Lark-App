@@ -29,10 +29,142 @@ const CsvVaultSchema = new mongoose.Schema({
 const CsvVault = mongoose.models.CsvVault || mongoose.model('CsvVault', CsvVaultSchema, 'csv_storage');
 
 const client = new lark.Client({ appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET });
+const CHUNK_SIZE = 100;
 
 function extractAttribute(row, keyword) {
     const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
     return key && row[key] ? String(row[key]).trim() : "";
+}
+
+function chunkArray(array, size) {
+    const chunks = [];
+    for (let i = 0; i < array.length; i += size) chunks.push(array.slice(i, i + size));
+    return chunks;
+}
+
+function sanitizeSheetName(rawName, fallbackIndex) {
+    const candidate = String(rawName || '').replace(/[\\\/\?\*\[\]\:\;]/g, '').trim().substring(0, 40);
+    return candidate ? `${candidate}-${fallbackIndex + 1}` : `Invoice-${fallbackIndex + 1}`;
+}
+
+async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows, debugLogs) {
+    const title = `${fileName.replace(/\.csv$/i, '')} - Part ${batchIndex + 1}`;
+    const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+    });
+    const createData = await createRes.json();
+    const ssToken = createData.data.spreadsheet.spreadsheet_token;
+    const ssUrl = createData.data.spreadsheet.url;
+    debugLogs.push(`✅ Đã tạo Spreadsheet: ${title}`);
+
+    const sheetTitles = rows.map((row, index) => sanitizeSheetName(row.waybillNumber, index));
+    const tabRequests = sheetTitles.map(sheetTitle => ({ addSheet: { properties: { title: sheetTitle } } }));
+    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: tabRequests })
+    });
+
+    const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${tenantToken}` }
+    });
+    const queryData = await queryRes.json();
+    const sheetIdMap = {};
+    if (queryData.data && queryData.data.sheets) {
+        queryData.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
+    }
+
+    for (let index = 0; index < rows.length; index++) {
+        const row = rows[index];
+        const sheetTitle = sheetTitles[index];
+        const targetId = sheetIdMap[sheetTitle];
+        if (!targetId) continue;
+
+        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
+        });
+
+        const valueRanges = row.fields.filter(f => f.val).map(f => ({ range: `${targetId}!${f.range}`, values: [[f.val]] }));
+        if (valueRanges.length > 0) {
+            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ valueRanges })
+            });
+        }
+
+        const mergeRanges = [
+            `${targetId}!A1:C4`,
+            `${targetId}!A5:F5`,
+            `${targetId}!A6:F6`,
+            `${targetId}!A7:F7`,
+            `${targetId}!A8:F8`,
+            `${targetId}!A18:D18`,
+            `${targetId}!A19:F19`
+        ];
+
+        const buyerName = row.fields[1].val;
+        const addressTo = row.fields[2].val;
+        const emailData = row.fields[3].val;
+        const phoneData = row.fields[4].val;
+
+        if (buyerName && buyerName.length > 18) mergeRanges.push(`${targetId}!B12:F12`);
+        if (addressTo && (addressTo.length > 18 || addressTo.includes('\n'))) mergeRanges.push(`${targetId}!B13:F13`);
+        if (emailData && emailData.length > 18) mergeRanges.push(`${targetId}!B14:F14`);
+        if (phoneData && phoneData.length > 18) mergeRanges.push(`${targetId}!B15:F15`);
+
+        for (const mRange of mergeRanges) {
+            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
+            });
+        }
+
+        const borderLine = { style: "SOLID", color: "#000000" };
+        const stylePayload = {
+            data: [
+                { ranges: [`${targetId}!A1:C4`], style: { hAlign: 1, vAlign: 1 } },
+                { ranges: [`${targetId}!A5:F5`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
+                { ranges: [`${targetId}!A6:F7`], style: { hAlign: 0, vAlign: 0 } },
+                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
+                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 0, vAlign: 0 } },
+                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 1 } },
+                { ranges: [`${targetId}!A18:F18`], style: { font: { bold: true } } },
+                { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
+                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 1 } }
+            ]
+        };
+
+        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(stylePayload)
+        });
+
+        try {
+            const logoPath = path.join(process.cwd(), 'public', 'logo.png');
+            if (fs.existsSync(logoPath)) {
+                const imgBuffer = fs.readFileSync(logoPath);
+                const imageByteArray = Array.from(imgBuffer);
+                const payload = { range: `${targetId}!A1:A1`, image: imageByteArray, name: 'logo.png' };
+                await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            }
+        } catch (imgErr) {
+            debugLogs.push(`❌ Lỗi logo [${sheetTitle}]: ${imgErr.message}`);
+        }
+    }
+
+    return { title, url: ssUrl, rowCount: rows.length };
 }
 
 // 📝 TEMPLATE ĐÃ CHUẨN HÓA (Giá mặc định 30)
@@ -101,7 +233,7 @@ app.post('/webhook/event', async (req, res) => {
                         const rawDesc = extractAttribute(row, 'item description') || "";
                         const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/); 
                         const qtyVal = qtyMatch ? qtyMatch[0] : "1"; 
-                        const englishName = rawDesc.replace(/^(\d+(\.\d+)?)\s*/, '').trim();
+                        const englishName = rawDesc.trim();
                         const vietnameseName = translateProductName(englishName);
                         const ProductName = vietnameseName ? `${englishName}\n${vietnameseName}` : englishName;
 
@@ -128,147 +260,27 @@ app.post('/webhook/event', async (req, res) => {
                         };
                     });
 
-                    const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: `Invoices: ${file_name}` })
-                    });
-                    const createData = await createRes.json();
-                    const ssToken = createData.data.spreadsheet.spreadsheet_token;
-                    const ssUrl = createData.data.spreadsheet.url;
-                    debugLogs.push(`✅ Đã tạo Spreadsheet thành công.`);
+                    const rowChunks = chunkArray(rowsData, CHUNK_SIZE);
+                    const createdSheets = [];
 
-                    const tabRequests = rowsData.map(r => ({ addSheet: { properties: { title: r.waybillNumber } } }));
-                    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ requests: tabRequests })
-                    });
-
-                    const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, { method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }});
-                    const queryData = await queryRes.json();
-                    const sheetIdMap = {};
-                    if (queryData.data && queryData.data.sheets) {
-                        queryData.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
-                    }
-
-                    for (const r of rowsData) {
-                        const targetId = sheetIdMap[r.waybillNumber];
-                        if (!targetId) continue;
-
-                        // BƯỚC 1. Dán Template chữ thô
-                        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
-                            method: 'PUT',
-                            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
-                        });
-
-                        // BƯỚC 2. Bắn Data
-                        const valueRanges = r.fields.filter(f => f.val).map(f => ({
-                            range: `${targetId}!${f.range}`, values: [[f.val]]
-                        }));
-                        if (valueRanges.length > 0) {
-                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
-                                method: 'POST',
-                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ valueRanges: valueRanges })
-                            });
-                        }
-
-                        // BƯỚC 3. Gộp Ô (Merge Cells)
-                        const mergeRanges = [
-                            `${targetId}!A1:C4`, // Gộp ô Logo
-                            `${targetId}!A5:F5`, // Tên công ty
-                            `${targetId}!A6:F6`, // Địa chỉ cty 1
-                            `${targetId}!A7:F7`, // Địa chỉ cty 2
-                            `${targetId}!A8:F8`, // Dòng Invoice
-                            `${targetId}!A18:D18`, // Dòng Total
-                            `${targetId}!A19:F19`  // Dòng SAY: US DOLLARS...
-                        ];
-
-                        const buyerName = r.fields[1].val;
-                        const addressTo = r.fields[2].val;
-                        const emailData = r.fields[3].val;
-                        const phoneData = r.fields[4].val;
-
-                        if (buyerName && buyerName.length > 18) mergeRanges.push(`${targetId}!B12:F12`);
-                        if (addressTo && (addressTo.length > 18 || addressTo.includes('\n'))) mergeRanges.push(`${targetId}!B13:F13`);
-                        if (emailData && emailData.length > 18) mergeRanges.push(`${targetId}!B14:F14`);
-                        if (phoneData && phoneData.length > 18) mergeRanges.push(`${targetId}!B15:F15`);
-
-                        for (const mRange of mergeRanges) {
-                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
-                                method: 'POST',
-                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
-                            });
-                        }
-
-                        // BƯỚC 4. ĐỊNH DẠNG STYLE (Đã sửa lỗi hAlign: 0 = Căn Trái)
-                        const borderLine = { style: "SOLID", color: "#000000" };
-                        const stylePayload = {
-                            data: [
-                                // Căn Giữa (1) cho ô Logo 
-                                { ranges: [`${targetId}!A1:C4`], style: { hAlign: 1, vAlign: 1 } },
-                                
-                                // 🚀 Ép CĂN TRÁI (0) & TRÊN (0) cho 3 dòng Thông tin công ty
-                                { ranges: [`${targetId}!A5:F5`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
-                                { ranges: [`${targetId}!A6:F7`], style: { hAlign: 0, vAlign: 0 } },
-
-                                // 🚀 In đậm, ép CĂN TRÁI (0) & TRÊN (0) cho các Nhãn (Buyer, To, Email, Phone)
-                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
-                                
-                                // 🚀 Căn TRÁI (0) & TRÊN (0) cho toàn bộ nội dung của Khách hàng
-                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 0, vAlign: 0 } },
-                                
-                                // In đậm & Căn giữa (1) COMMERCIAL INVOICE
-                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 1 } },
-                                // In đậm dòng Total
-                                { ranges: [`${targetId}!A18:F18`], style: { font: { bold: true } } },
-                                // Kẻ bảng xung quanh Sản phẩm
-                                { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
-                                // Đổ màu nền Xám, In đậm, Căn giữa (1) cho Header Bảng
-                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 1 } }
-                            ]
-                        };
-                        
-                        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
-                            method: 'PUT',
-                            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify(stylePayload)
-                        });
-
-                        // BƯỚC 5. CHÈN LOGO
-                        try {
-                            const logoPath = path.join(process.cwd(), 'public', 'logo.png');
-                            if (fs.existsSync(logoPath)) {
-                                const imgBuffer = fs.readFileSync(logoPath);
-                                const imageByteArray = Array.from(imgBuffer);
-                                
-                                const payload = {
-                                    range: `${targetId}!A1:A1`, 
-                                    image: imageByteArray,
-                                    name: 'logo.png'
-                                };
-                                
-                                await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
-                                    method: 'POST',
-                                    headers: { 
-                                        'Authorization': `Bearer ${tenantToken}`,
-                                        'Content-Type': 'application/json' 
-                                    }, 
-                                    body: JSON.stringify(payload)
-                                });
-                            }
-                        } catch (imgErr) {
-                            debugLogs.push(`❌ Lỗi catch Logo [${r.waybillNumber}]: ${imgErr.message}`);
-                        }
+                    for (let batchIndex = 0; batchIndex < rowChunks.length; batchIndex++) {
+                        const batchRows = rowChunks[batchIndex];
+                        debugLogs.push(`📦 Bắt đầu batch ${batchIndex + 1}/${rowChunks.length} với ${batchRows.length} invoices`);
+                        const batchResult = await createSpreadsheetForBatch(tenantToken, `Invoices: ${file_name}`, batchIndex, batchRows, debugLogs);
+                        createdSheets.push(batchResult);
                     }
 
                     await connectDB();
                     await (new CsvVault({ fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData })).save();
 
-                    const finalLogText = debugLogs.join('\n').substring(0, 3000); 
+                    const actions = createdSheets.map(sheet => ({
+                        tag: 'button',
+                        text: { tag: 'plain_text', content: `${sheet.title} (${sheet.rowCount})` },
+                        type: 'primary',
+                        url: sheet.url
+                    }));
+
+                    const finalLogText = debugLogs.join('\n').substring(0, 3000);
 
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
@@ -277,10 +289,10 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '✅ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "blue" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}\n📄 **Số Files:** ${createdSheets.length}` } },
                                     { tag: 'hr' },
-                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } },
-                                    { tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: '🌐 Mở Lark Sheet' }, type: 'primary', url: ssUrl }] }
+                                    { tag: 'action', actions: actions.slice(0, 5) } ,
+                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
                                 ]
                             })
                         }
