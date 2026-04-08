@@ -55,7 +55,7 @@ const INVOICE_TEMPLATE = [
     ["Da Nang city, Viet Nam", "", "", "", "", ""],
     ["COMMERCIAL INVOICE", "", "", "", "", ""],
     ["", "", "", "", "INVOICE NO:", ""],
-    ["", "", "", "", "DATE:", ""],
+    ["", "", "", "", "DATE:", ""], // Dòng 10 (Index 9)
     ["", "", "", "", "CUSTOMER ID:", ""],
     ["Buyer:", "", "", "", "", ""], // Dòng 12
     ["To", "", "", "", "", ""],    // Dòng 13
@@ -68,7 +68,7 @@ const INVOICE_TEMPLATE = [
 ];
 
 // =====================================================================
-// 🟢 WEBHOOK 1: VẼ FORM TRẮNG, IN ĐẬM, TÔ MÀU, SIZE 13, LỌC SỐ LƯỢNG
+// 🟢 WEBHOOK 1: VẼ FORM, IN ĐẬM, TÔ MÀU, KẺ BẢNG, GỘP Ô, LỌC SỐ
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
@@ -100,34 +100,38 @@ app.post('/webhook/event', async (req, res) => {
                     let csvString = fileBuffer.toString('utf-8').replace(/^\uFEFF/, '');
                     const parsed = Papa.parse(csvString, { header: true, skipEmptyLines: 'greedy', dynamicTyping: true, transformHeader: (h) => h.trim() });
 
-                    // 2. CHUẨN HÓA DATA
+                    // 2. CHUẨN HÓA DATA & XỬ LÝ SỐ QUANTITY
                     const rowsData = parsed.data.map(row => {
                         const addr1 = extractAttribute(row, 'recipient address 1');
                         const addr2 = extractAttribute(row, 'recipient address 2');
                         const city = extractAttribute(row, 'recipient city');
                         const zip = extractAttribute(row, 'postal code');
-                        const country = getCountryName(extractAttribute(row, 'recipient country'));
+                        
+                        // ✅ ĐÃ FIX LỖI TRÙNG BIẾN (Gộp tìm kiếm vào 1 dòng duy nhất)
+                        const rawCountry = extractAttribute(row, 'recipient country') || extractAttribute(row, 'country');
+                        const country = rawCountry ? getCountryName(rawCountry) : "";
                         
                         const fullAddress = [addr1, addr2, city, `${zip} ${country}`.trim()].filter(Boolean).join('\n');
 
-                        // 🛠 LỌC SỐ LƯỢNG (QUANTITY) TỪ DESCRIPTION
+                        // LẤY SHIPMENT DATE
+                        const shipmentDate = extractAttribute(row, 'shipment date') || "";
+
+                        // LỌC QUANTITY
                         const rawDesc = extractAttribute(row, 'item description') || "";
-                        // Tìm con số đầu tiên (hỗ trợ cả số thập phân VD: 3.00)
                         const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/); 
-                        const qtyVal = qtyMatch ? qtyMatch[0] : "1"; // Mặc định là 1 nếu không có số
-                        
-                        // Cắt bỏ con số ở đầu câu để Tên sản phẩm gọn gàng hơn
+                        const qtyVal = qtyMatch ? qtyMatch[0] : "1"; 
                         const cleanProductName = rawDesc.replace(/^(\d+(\.\d+)?)\s*/, '').trim();
 
                         return {
                             waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random()*1000)}`,
                             fields: [
+                                { val: shipmentDate, range: "F10:F10" },            // ✅ Gắn Date vào vị trí F10
                                 { val: extractAttribute(row, 'recipient name'), range: "B12:B12" },
                                 { val: fullAddress, range: "B13:B13" },
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
-                                { val: cleanProductName, range: "B17:B17" }, // Tên SP đã làm sạch số
-                                { val: qtyVal, range: "E17:E17" }           // Số lượng nhét vào E17
+                                { val: cleanProductName, range: "B17:B17" }, 
+                                { val: qtyVal, range: "E17:E17" }           
                             ]
                         };
                     });
@@ -158,8 +162,8 @@ app.post('/webhook/event', async (req, res) => {
                         queryData.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
                     }
 
-                    // 5. VẼ FORM, TÔ MÀU, SIZE 13 CHUẨN & CHÈN LOGO
-                    console.log(`🚀 Bắt đầu vẽ Template, chèn Logo và định dạng Style (Size 13)...`);
+                    // 5. VẼ FORM, TÔ MÀU, KẺ BẢNG, GỘP Ô, CHÈN LOGO
+                    console.log(`🚀 Bắt đầu Trang trí Template (Size 13, Kẻ Bảng, Gộp Ô)...`);
                     for (const r of rowsData) {
                         const targetId = sheetIdMap[r.waybillNumber];
                         if (!targetId) continue;
@@ -171,36 +175,57 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 🛠 BƯỚC 5B: ĐỊNH DẠNG STYLE (Ép Size 13, In đậm, Bôi màu)
+                        // 🛠 BƯỚC 5B: GỘP Ô (Merge Cells) CHỐNG TRÀN CHỮ
+                        const mergeRanges = [
+                            `${targetId}!A8:F8`,   // COMMERCIAL INVOICE
+                            `${targetId}!A18:D18`, // Total
+                            `${targetId}!A19:F19`, // SAY: US DOLLARS...
+                            `${targetId}!B12:F12`, // Buyer Name
+                            `${targetId}!B13:F13`, // Buyer Address
+                            `${targetId}!B14:F14`, // Email
+                            `${targetId}!B15:F15`  // Phone
+                        ];
+                        for (const mRange of mergeRanges) {
+                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
+                            });
+                        }
+
+                        // 🛠 BƯỚC 5C: ĐỊNH DẠNG STYLE & KẺ BẢNG
+                        const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
                                 {   // 1. Ép toàn bộ tờ giấy về Font Size 13pt
                                     ranges: [`${targetId}!A1:F20`],
                                     style: { font: { fontSize: "13pt" } }
                                 },
-                                {   // 2. In đậm Tên cty, Commercial Invoice và dòng Total (Giữ Size 13)
-                                    ranges: [`${targetId}!A5:A8`, `${targetId}!A18:F18`],
+                                {   // 2. In đậm & Căn giữa chữ COMMERCIAL INVOICE
+                                    ranges: [`${targetId}!A8:A8`],
+                                    style: { font: { bold: true, fontSize: "13pt" }, hAlign: 2 }
+                                },
+                                {   // 3. In đậm Tên cty và dòng Total
+                                    ranges: [`${targetId}!A5:A5`, `${targetId}!A18:A18`],
                                     style: { font: { bold: true, fontSize: "13pt" } }
                                 },
-                                {   // 3. Bôi màu nền xám, in đậm cho Thanh Header Bảng (Giữ Size 13)
+                                {   // 4. ✅ KẺ BẢNG (Borders) xung quanh khu vực Sản phẩm
+                                    ranges: [`${targetId}!A16:F18`],
+                                    style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine } }
+                                },
+                                {   // 5. Bôi màu nền xám, in đậm cho Thanh Header Bảng
                                     ranges: [`${targetId}!A16:F16`],
-                                    style: { 
-                                        font: { bold: true, fontSize: "13pt" }, 
-                                        backColor: "#D9D9D9", 
-                                        hAlign: 2 // Căn giữa
-                                    }
+                                    style: { font: { bold: true, fontSize: "13pt" }, backColor: "#D9D9D9", hAlign: 2 }
                                 }
                             ]
                         };
-                        const styleRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
+                        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
                             method: 'PUT',
                             headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify(stylePayload)
                         });
-                        const styleLog = await styleRes.json();
-                        if(styleLog.code !== 0) console.log(`   ⚠️ Lỗi tô màu: ${styleLog.msg}`);
 
-                        // 🛠 BƯỚC 5C: CHÈN LOGO TỪ FOLDER PUBLIC 
+                        // 🛠 BƯỚC 5D: CHÈN LOGO TỪ FOLDER PUBLIC 
                         try {
                             if (fs.existsSync('./public/logo.png')) {
                                 const imgBuffer = fs.readFileSync('./public/logo.png');
@@ -211,21 +236,17 @@ app.post('/webhook/event', async (req, res) => {
                                 form.append('image', imgBlob, 'logo.png');
                                 form.append('name', 'logo.png');
 
-                                const imgRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
+                                await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
                                     method: 'POST',
                                     headers: { 'Authorization': `Bearer ${USER_TOKEN}` }, 
                                     body: form
                                 });
-                                const imgLog = await imgRes.json();
-                                if(imgLog.code !== 0) console.log(`   ⚠️ Lỗi chèn Logo: ${imgLog.msg}`);
-                            } else {
-                                console.log(`   ⚠️ Không tìm thấy file logo tại ./public/logo.png`);
                             }
                         } catch (imgErr) {
-                            console.error(`   ❌ Lỗi hệ thống khi chèn ảnh:`, imgErr.message);
+                            console.error(`   ❌ Lỗi chèn ảnh:`, imgErr.message);
                         }
 
-                        // 🛠 BƯỚC 5D: Bắn các biến (Tên, Địa chỉ, Qty...) vào form
+                        // 🛠 BƯỚC 5E: Bắn các biến (Tên, Địa chỉ, Date, Qty...) vào form
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -236,7 +257,7 @@ app.post('/webhook/event', async (req, res) => {
                                 headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ valueRanges: valueRanges })
                             });
-                            console.log(`   ✅ Hoàn tất hóa đơn: [${r.waybillNumber}] | Số lượng lọc được: ${r.fields[5].val}`);
+                            console.log(`   ✅ Hoàn tất hóa đơn: [${r.waybillNumber}]`);
                         }
                     }
 
@@ -251,7 +272,7 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '✅ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Đã áp dụng Style (Màu nền, In đậm, **Size 13**) và tự động trích xuất số lượng (Qty)!` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Đã áp dụng Size 13, **Kẻ Bảng**, **Gộp Ô (Merge)**, và gắn **Shipment Date**!` } },
                                     {
                                         tag: 'action',
                                         actions: [
