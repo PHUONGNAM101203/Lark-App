@@ -44,7 +44,7 @@ function chunkArray(array, size) {
 
 function sanitizeSheetName(rawName, fallbackIndex) {
     const candidate = String(rawName || '').replace(/[\\\/\?\*\[\]\:\;]/g, '').trim().substring(0, 40);
-    return candidate ? `${candidate}-${fallbackIndex + 1}` : `Invoice-${fallbackIndex + 1}`;
+    return candidate ? `${candidate}-${fallbackIndex + 2}` : `Invoice-${fallbackIndex + 2}`;
 }
 
 // 📝 TEMPLATE ĐÃ CHUẨN HÓA (Giá mặc định 30)
@@ -98,7 +98,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const mergeRanges = [
         `${templateSheetId}!A1:C4`, `${templateSheetId}!A5:F5`, `${templateSheetId}!A6:F6`,
         `${templateSheetId}!A7:F7`, `${templateSheetId}!A8:F8`, `${templateSheetId}!A18:D18`,
-        `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`, 
+        `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`,
         `${templateSheetId}!B14:F14`, `${templateSheetId}!B15:F15`
     ];
     for (const mRange of mergeRanges) {
@@ -262,6 +262,13 @@ app.post('/webhook/event', async (req, res) => {
                     });
 
                     const rowChunks = chunkArray(rowsData, CHUNK_SIZE);
+                    await client.im.message.reply({
+                        path: { message_id: message.message_id },
+                        data: {
+                            msg_type: 'text',
+                            content: JSON.stringify({ text: `⏳ Đã nhận ${rowsData.length} đơn.\n🚀 Đang tiến hành tạo ĐỒNG THỜI ${rowChunks.length} file (mỗi file ${CHUNK_SIZE} sheets)...` })
+                        }
+                    });
                     const createdSheets = [];
 
                     // Khởi chạy tạo các Batch
