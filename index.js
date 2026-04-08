@@ -98,7 +98,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const mergeRanges = [
         `${templateSheetId}!A1:C4`, `${templateSheetId}!A5:F5`, `${templateSheetId}!A6:F6`,
         `${templateSheetId}!A7:F7`, `${templateSheetId}!A8:F8`, `${templateSheetId}!A18:D18`,
-        `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`, 
+        `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`,
         `${templateSheetId}!B14:F14`, `${templateSheetId}!B15:F15`
     ];
     for (const mRange of mergeRanges) {
@@ -263,14 +263,39 @@ app.post('/webhook/event', async (req, res) => {
                     });
 
                     const rowChunks = chunkArray(rowsData, CHUNK_SIZE);
-                    const createdSheets = [];
 
-                    // Khởi chạy tạo các Batch
-                    for (let batchIndex = 0; batchIndex < rowChunks.length; batchIndex++) {
-                        const batchRows = rowChunks[batchIndex];
-                        const batchResult = await createSpreadsheetForBatch(tenantToken, `Invoices: ${file_name}`, batchIndex, batchRows, debugLogs);
-                        createdSheets.push(batchResult);
-                    }
+                    // Báo cho user biết hệ thống đã nhận và đang chia file
+                    await client.im.message.reply({
+                        path: { message_id: message.message_id },
+                        data: {
+                            msg_type: 'text',
+                            content: JSON.stringify({ text: `⏳ Đã nhận ${rowsData.length} đơn.\n🚀 Đang tiến hành tạo ĐỒNG THỜI ${rowChunks.length} file (mỗi file ${CHUNK_SIZE} sheets)...` })
+                        }
+                    });
+
+                    // Chạy SONG SONG (Parallel) tất cả các batch cùng 1 lúc để ép thời gian xuống mức thấp nhất
+                    const promises = rowChunks.map((batchRows, batchIndex) =>
+                        createSpreadsheetForBatch(tenantToken, `Invoices: ${file_name}`, batchIndex, batchRows, debugLogs)
+                            .then(async (batchResult) => {
+                                // GỬI LẦN LƯỢT: File nào chạy xong là gửi link ngay lập tức cho Bot
+                                await client.im.message.reply({
+                                    path: { message_id: message.message_id },
+                                    data: {
+                                        msg_type: 'text',
+                                        content: JSON.stringify({ text: `✅ [Hoàn tất ${batchIndex + 1}/${rowChunks.length}]\n📄 File: ${batchResult.title}\n🔗 Link: ${batchResult.url}` })
+                                    }
+                                });
+                                return batchResult;
+                            })
+                            .catch(err => {
+                                debugLogs.push(`❌ Lỗi ở batch ${batchIndex + 1}: ${err.message}`);
+                                return null;
+                            })
+                    );
+
+                    // Đợi tất cả cùng hoàn thành (Thời gian tổng chỉ bằng thời gian xử lý 1 batch)
+                    const createdSheetsResults = await Promise.all(promises);
+                    const createdSheets = createdSheetsResults.filter(Boolean); // Lọc bỏ những batch bị lỗi nếu có
 
                     await connectDB();
                     await (new CsvVault({ fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData })).save();
@@ -286,7 +311,7 @@ app.post('/webhook/event', async (req, res) => {
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '⚡ TỐC ĐỘ: TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: '⚡ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
                                     { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}\n🚀 **Đã tối ưu:** Nhân bản Template siêu tốc!` } },
                                     { tag: 'hr' },
