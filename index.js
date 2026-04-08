@@ -78,6 +78,21 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const createData = await createRes.json();
     const ssToken = createData.data.spreadsheet.spreadsheet_token;
     const ssUrl = createData.data.spreadsheet.url;
+    // =========================================================
+    // 🔓 1.5 MỞ QUYỀN MẶC ĐỊNH LÀ "EDIT" CHO MỌI NGƯỜI
+    // =========================================================
+    debugLogs.push(`🔓 Đang mở quyền Edit mặc định cho link...`);
+    await fetchWithRetry(`https://open.larksuite.com/open-apis/drive/v1/permissions/${ssToken}/public`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            // "tenant_editable": Bất kỳ ai trong công ty có link đều có thể sửa.
+            // Nếu muốn mở ra ngoài công ty, có thể dùng "anyone_editable" (tùy cài đặt bảo mật của admin)
+            link_share_entity: "tenant_editable", 
+            external_access: true
+        })
+    }).catch(err => debugLogs.push(`⚠️ Lỗi khi mở quyền Public: ${err.message}`));
+    // =========================================================
 
     // 2. LẤY ID CỦA SHEET MẶC ĐỊNH LÀM TEMPLATE GỐC
     const queryRes1 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
