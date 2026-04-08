@@ -76,7 +76,6 @@ app.post('/webhook/event', async (req, res) => {
                 const { file_name, file_key } = JSON.parse(message.content);
 
                 if (file_name.toLowerCase().endsWith('.csv')) {
-                    // 🟢 KHỞI TẠO BỘ CHỨA LOG ĐỂ BẮN LÊN LARK
                     let debugLogs = [];
                     debugLogs.push(`🚀 Bắt đầu xử lý file: ${file_name}`);
 
@@ -146,31 +145,18 @@ app.post('/webhook/event', async (req, res) => {
                         const targetId = sheetIdMap[r.waybillNumber];
                         if (!targetId) continue;
 
+                        // 🛠 1. Dán Template chữ thô
                         await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
                             method: 'PUT',
                             headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 🛠 ĐÃ THÊM: Gộp ô A1:C4 để lấy chỗ "nhét" cái Logo cho nó phình to ra
-                        const mergeRanges = [
-                            `${targetId}!A1:C4`,   // <--- Gộp ô cho Logo
-                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
-                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
-                        ];
-                        for (const mRange of mergeRanges) {
-                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
-                                method: 'POST',
-                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
-                            });
-                        }
-
+                        // 🛠 2. ĐỊNH DẠNG STYLE TRƯỚC (Theo logic của sếp: Kẻ bảng, In đậm, Size 13...)
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
                                 { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: 13 } } },
-                                // 🛠 ĐÃ THÊM: Căn Giữa (H) & Giữa (V) cho ô Logo để ảnh nằm ngay ngắn
                                 { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
                                 { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: 13 }, hAlign: 2 } },
                                 { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: 13 } } },
@@ -188,9 +174,27 @@ app.post('/webhook/event', async (req, res) => {
                         const styleLog = await styleRes.json();
                         if(styleLog.code !== 0) {
                             debugLogs.push(`❌ Lỗi Style [${r.waybillNumber}]: ${styleLog.msg}`);
+                        } else {
+                            debugLogs.push(`✅ Đã áp Style cho [${r.waybillNumber}]`);
                         }
 
-                        // CHÈN LOGO
+                        // 🛠 3. GỘP Ô (Merge Cells) SAU KHI ĐÃ STYLE
+                        const mergeRanges = [
+                            `${targetId}!A1:C4`, // Gộp ô Logo
+                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
+                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
+                        ];
+                        for (const mRange of mergeRanges) {
+                            const mergeRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
+                            });
+                            const mergeLog = await mergeRes.json();
+                            if(mergeLog.code !== 0) debugLogs.push(`❌ Lỗi Merge ${mRange}: ${mergeLog.msg}`);
+                        }
+
+                        // 🛠 4. CHÈN LOGO
                         try {
                             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
                             if (fs.existsSync(logoPath)) {
@@ -225,6 +229,7 @@ app.post('/webhook/event', async (req, res) => {
                             debugLogs.push(`❌ Lỗi catch Logo [${r.waybillNumber}]: ${imgErr.message}`);
                         }
 
+                        // 🛠 5. ĐIỀN DỮ LIỆU
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -241,10 +246,8 @@ app.post('/webhook/event', async (req, res) => {
                     await connectDB();
                     await (new CsvVault({ fileName: file_name, fileContentRaw: csvString, totalRows: rowsData.length, parsedData: rowsData })).save();
 
-                    // RÚT GỌN LOG NẾU QUÁ DÀI ĐỂ KHÔNG BỊ LỖI LARK MESSAGE
                     const finalLogText = debugLogs.join('\n').substring(0, 3000); 
 
-                    // BẮN TOÀN BỘ LOG VÀO ĐÂY CHO SẾP XEM
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
                         data: {
@@ -263,7 +266,6 @@ app.post('/webhook/event', async (req, res) => {
                 }
             }
         } catch (error) {
-            // NẾU CODE CHẾT, BẮN LỖI ĐỎ VỀ LARK LUÔN
             await client.im.message.reply({
                 path: { message_id: message.message_id },
                 data: {
