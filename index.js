@@ -7,7 +7,6 @@ const { getCountryName } = require('./countryCodes');
 const { translateProductName } = require('./translations');
 const fs = require('fs');
 const path = require('path'); 
-const FormData = require('form-data'); 
 
 const app = express();
 app.use(express.json());
@@ -152,17 +151,17 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 🛠 2. ĐỊNH DẠNG STYLE TRƯỚC (Theo logic của sếp: Kẻ bảng, In đậm, Size 13...)
+                        // 🛠 2. ĐỊNH DẠNG STYLE TRƯỚC (✅ Fix lỗi fontSize bằng chuỗi "13")
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
-                                { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: 13 } } },
+                                { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: "13" } } },
                                 { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
-                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: 13 }, hAlign: 2 } },
-                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: 13 } } },
-                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: 13 } } },
+                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: "13" }, hAlign: 2 } },
+                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: "13" } } },
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: "13" } } },
                                 { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
-                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true, fontSize: 13 }, backColor: "#D9D9D9", hAlign: 2 } }
+                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true, fontSize: "13" }, backColor: "#D9D9D9", hAlign: 2 } }
                             ]
                         };
                         
@@ -178,9 +177,9 @@ app.post('/webhook/event', async (req, res) => {
                             debugLogs.push(`✅ Đã áp Style cho [${r.waybillNumber}]`);
                         }
 
-                        // 🛠 3. GỘP Ô (Merge Cells) SAU KHI ĐÃ STYLE
+                        // 🛠 3. GỘP Ô (Merge Cells) SAU KHI ĐÃ STYLE (Sẽ tạo khoảng trống bự cho Logo)
                         const mergeRanges = [
-                            `${targetId}!A1:C4`, // Gộp ô Logo
+                            `${targetId}!A1:C4`, // Gộp vùng A1:C4 thành 1 khối
                             `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
                             `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
                         ];
@@ -194,7 +193,7 @@ app.post('/webhook/event', async (req, res) => {
                             if(mergeLog.code !== 0) debugLogs.push(`❌ Lỗi Merge ${mRange}: ${mergeLog.msg}`);
                         }
 
-                        // 🛠 4. CHÈN LOGO
+                        // 🛠 4. CHÈN LOGO (Bằng Array Byte JSON như sếp yêu cầu)
                         try {
                             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
                             if (fs.existsSync(logoPath)) {
@@ -202,7 +201,7 @@ app.post('/webhook/event', async (req, res) => {
                                 const imageByteArray = Array.from(imgBuffer);
                                 
                                 const payload = {
-                                    range: `${targetId}!A1:A1`, 
+                                    range: `${targetId}!A1:A1`, // Chèn vào ô A1, vì nó đã gộp A1:C4 nên hình sẽ bung to lấp đầy
                                     image: imageByteArray,
                                     name: 'logo.png'
                                 };
