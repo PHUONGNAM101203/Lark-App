@@ -3,6 +3,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 const Papa = require('papaparse');
+const { getCountryName } = require('./countryCodes');
 
 const app = express();
 app.use(express.json());
@@ -105,7 +106,7 @@ app.post('/webhook/event', async (req, res) => {
                         const addr2 = extractAttribute(row, 'recipient address 2');
                         const city = extractAttribute(row, 'recipient city');
                         const zip = extractAttribute(row, 'postal code');
-                        const country = extractAttribute(row, 'recipient country');
+                        const country = getCountryName(extractAttribute(row, 'recipient country'));
                         const fullAddress = `${addr1} ${addr2} ${city} ${zip} ${country}`.replace(/\s+/g, ' ').trim();
 
                         return {
