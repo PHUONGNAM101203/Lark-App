@@ -152,7 +152,12 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        const mergeRanges = [`${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`];
+                        // 🛠 ĐÃ THÊM: Gộp ô A1:C4 để lấy chỗ "nhét" cái Logo cho nó phình to ra
+                        const mergeRanges = [
+                            `${targetId}!A1:C4`,   // <--- Gộp ô cho Logo
+                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
+                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
+                        ];
                         for (const mRange of mergeRanges) {
                             await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
                                 method: 'POST',
@@ -165,6 +170,8 @@ app.post('/webhook/event', async (req, res) => {
                         const stylePayload = {
                             data: [
                                 { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: 13 } } },
+                                // 🛠 ĐÃ THÊM: Căn Giữa (H) & Giữa (V) cho ô Logo để ảnh nằm ngay ngắn
+                                { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
                                 { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: 13 }, hAlign: 2 } },
                                 { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: 13 } } },
                                 { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: 13 } } },
@@ -185,7 +192,6 @@ app.post('/webhook/event', async (req, res) => {
 
                         // CHÈN LOGO
                         try {
-                            // Sửa đường dẫn để tương thích Vercel Serverless
                             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
                             if (fs.existsSync(logoPath)) {
                                 const imgBuffer = fs.readFileSync(logoPath);
