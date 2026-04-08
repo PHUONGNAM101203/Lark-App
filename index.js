@@ -6,7 +6,7 @@ const Papa = require('papaparse');
 const { getCountryName } = require('./countryCodes');
 const fs = require('fs');
 const path = require('path'); 
-// ❌ ĐÃ XÓA thư viện form-data rác, sử dụng FormData gốc của hệ thống cho mượt!
+const FormData = require('form-data'); // Bắt buộc dùng thư viện này để xử lý Binary
 
 const app = express();
 app.use(express.json());
@@ -92,7 +92,7 @@ app.post('/webhook/event', async (req, res) => {
                     console.log(`\n========================================`);
                     console.log(`📂 BẮT ĐẦU TẠO HÓA ĐƠN TỪ FILE: ${file_name}`);
 
-                    // ✅ LẤY TOKEN MỚI TINH ĐỂ KHÔNG BAO GIỜ BỊ HẾT HẠN
+                    // ✅ LẤY TOKEN MỚI (Tránh hết hạn)
                     const tokenRes = await client.auth.tenantAccessToken.internal({ data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }});
                     const tenantToken = tokenRes.tenant_access_token;
                     
@@ -160,7 +160,7 @@ app.post('/webhook/event', async (req, res) => {
                     }
 
                     // VẼ FORM VÀ TRANG TRÍ
-                    console.log(`🚀 Bắt đầu Trang trí Template (Size 13, Gộp Ô, Kẻ Bảng, Logo)...`);
+                    console.log(`🚀 Bắt đầu Trang trí Template (Size 13, Gộp Ô, Kẻ Bảng, Logo Nhị Phân)...`);
                     for (const r of rowsData) {
                         const targetId = sheetIdMap[r.waybillNumber];
                         if (!targetId) continue;
@@ -178,26 +178,23 @@ app.post('/webhook/event', async (req, res) => {
                             `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
                         ];
                         for (const mRange of mergeRanges) {
-                            const mergeRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
+                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
                                 method: 'POST',
                                 headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
                             });
-                            const mergeLog = await mergeRes.json();
-                            if(mergeLog.code !== 0) console.log(`   ⚠️ Lỗi Gộp Ô:`, mergeLog.msg);
                         }
 
-                        // 🛠 3. ĐỊNH DẠNG STYLE VÀ KẺ BẢNG (Đã fix lỗi Font "13")
+                        // 🛠 3. ĐỊNH DẠNG STYLE VÀ KẺ BẢNG (Đảm bảo fontSize: 13 kiểu Số nguyên)
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
-                                { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: "13" } } },
-                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: "13" }, hAlign: 2 } },
-                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: "13" } } },
-                                // ✅ Ép căn Lề Trái (hAlign: 1) và Lề Trên (vAlign: 0) cho cụm Buyer -> Phone
-                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: "13" } } },
+                                { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: 13 } } },
+                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: 13 }, hAlign: 2 } },
+                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: 13 } } },
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: 13 } } },
                                 { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
-                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true, fontSize: "13" }, backColor: "#D9D9D9", hAlign: 2 } }
+                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true, fontSize: 13 }, backColor: "#D9D9D9", hAlign: 2 } }
                             ]
                         };
                         const styleRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
@@ -208,33 +205,41 @@ app.post('/webhook/event', async (req, res) => {
                         const styleLog = await styleRes.json();
                         if(styleLog.code !== 0) console.log(`   ⚠️ Lỗi Tô Màu/Style:`, styleLog.msg);
 
-                        // 🛠 4. CHÈN LOGO (Sử dụng Blob và FormData nguyên thủy của hệ thống)
+                        // 🛠 4. CHÈN LOGO THEO CÁCH ĐỌC BINARY (BUFFER)
                         try {
                             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
                             if (fs.existsSync(logoPath)) {
-                                const imgBuffer = fs.readFileSync(logoPath);
-                                const blob = new Blob([imgBuffer], { type: 'image/png' });
+                                // Đọc tệp thành chuỗi Nhị phân (Binary Buffer)
+                                const imgBinaryBuffer = fs.readFileSync(logoPath); 
                                 
-                                const form = new FormData(); // FormData gốc của hệ thống (Node 18+)
+                                const form = new FormData();
                                 form.append('range', `${targetId}!A1:C4`);
-                                form.append('image', blob, 'logo.png');
+                                // Nhét Binary thẳng vào cùng tên file và content-type
+                                form.append('image', imgBinaryBuffer, {
+                                    filename: 'logo.png',
+                                    contentType: 'image/png'
+                                });
                                 form.append('name', 'logo.png');
 
                                 const imgRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
                                     method: 'POST',
-                                    headers: { 'Authorization': `Bearer ${tenantToken}` }, // Không set Content-Type thủ công, để hệ thống tự sinh Boundary
+                                    headers: { 
+                                        'Authorization': `Bearer ${tenantToken}`,
+                                        ...form.getHeaders() // Lệnh sống còn: chèn Boundary header
+                                    }, 
                                     body: form
                                 });
                                 const imgLog = await imgRes.json();
                                 if(imgLog.code !== 0) console.log(`   ⚠️ Lỗi Chèn Ảnh:`, imgLog.msg);
+                                else console.log(`   🖼️ Đã chèn Logo thành công!`);
                             } else {
                                 console.log(`   ⚠️ Bỏ qua Ảnh: Không tìm thấy file Logo tại ${logoPath}`);
                             }
                         } catch (imgErr) {
-                            console.error(`   ❌ Sự cố cục bộ khi xử lý ảnh:`, imgErr.message);
+                            console.error(`   ❌ Lỗi chèn ảnh hệ thống:`, imgErr.message);
                         }
 
-                        // 🛠 5. BẮN DỮ LIỆU ĐÃ LỌC VÀO CÁC Ô TƯƠNG ỨNG
+                        // 🛠 5. BẮN DỮ LIỆU ĐÃ LỌC
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -260,7 +265,7 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '✅ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Hệ thống đã Kẻ Bảng, In đậm, Gộp Ô Căn Trái, Ép Font 13 và Bắn Logo thành công!` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Đã Kẻ Bảng, Ép Font Số Nguyên, Gộp Ô và **Bắn Logo Binary** thành công!` } },
                                     { tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: '🌐 Mở Lark Sheet' }, type: 'primary', url: ssUrl }] }
                                 ]
                             })
