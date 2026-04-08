@@ -12,7 +12,7 @@ app.use(express.json());
 // ==========================================
 // 🔑 TOKEN USER 
 // ==========================================
-const USER_TOKEN = "t-g206481MW7SJHCHSD6ZBVL5JQPNJPTWMEJWWW74H";
+const USER_TOKEN = "t-g206483J6SFYUPBMPKEAEZYQYIR5HC66OA5LKATR";
 const processedEvents = new Set();
 
 // ==========================================
