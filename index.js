@@ -4,9 +4,9 @@ const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 const Papa = require('papaparse');
 const { getCountryName } = require('./countryCodes');
-const { translateProductName } = require('./translations');
+const { translateProductName, cleanProductKey } = require('./translations');
 const fs = require('fs');
-const path = require('path'); 
+const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -172,22 +172,22 @@ const INVOICE_TEMPLATE = [
     ["", "", "", "", "", ""],
     ["", "", "", "", "", ""],
     ["", "", "", "", "", ""],
-    ["", "", "", "", "", ""], 
+    ["", "", "", "", "", ""],
     ["WILD AND KING COMPANY LIMITED", "", "", "", "", ""],
     ["K10/7B Pham Van Nghi, Thanh Khe ward", "", "", "", "", ""],
     ["Da Nang city, Viet Nam", "", "", "", "", ""],
     ["COMMERCIAL INVOICE", "", "", "", "", ""],
     ["", "", "", "", "INVOICE NO:", ""],
-    ["", "", "", "", "DATE:", ""], 
+    ["", "", "", "", "DATE:", ""],
     ["", "", "", "", "CUSTOMER ID:", ""],
-    ["Buyer:", "", "", "", "", ""], 
-    ["To", "", "", "", "", ""],    
-    ["Email", "", "", "", "", ""], 
-    ["Phone", "", "", "", "", ""], 
-    ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"], 
+    ["Buyer:", "", "", "", "", ""],
+    ["To", "", "", "", "", ""],
+    ["Email", "", "", "", "", ""],
+    ["Phone", "", "", "", "", ""],
+    ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"],
     ["1", "", "Pair", "30", "", "0.0"], // <--- Set cứng 30
-    ["Total", "", "", "", "0", "0.0"], 
-    ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""] 
+    ["Total", "", "", "", "0", "0.0"],
+    ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""]
 ];
 
 app.post('/webhook/event', async (req, res) => {
@@ -211,9 +211,9 @@ app.post('/webhook/event', async (req, res) => {
                     let debugLogs = [];
                     debugLogs.push(`🚀 Bắt đầu xử lý file: ${file_name}`);
 
-                    const tokenRes = await client.auth.tenantAccessToken.internal({ data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }});
+                    const tokenRes = await client.auth.tenantAccessToken.internal({ data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET } });
                     const tenantToken = tokenRes.tenant_access_token;
-                    
+
                     const fetchRes = await fetch(`https://open.larksuite.com/open-apis/im/v1/messages/${message.message_id}/resources/${file_key}?type=file`, { headers: { 'Authorization': `Bearer ${tenantToken}` } });
                     const fileBuffer = Buffer.from(await fetchRes.arrayBuffer());
                     let csvString = fileBuffer.toString('utf-8').replace(/^\uFEFF/, '');
@@ -227,35 +227,37 @@ app.post('/webhook/event', async (req, res) => {
                         const rawCountry = extractAttribute(row, 'recipient country') || extractAttribute(row, 'country');
                         const country = rawCountry ? getCountryName(rawCountry) : "";
                         const fullAddress = [addr1, addr2, city, `${zip} ${country}`.trim()].filter(Boolean).join('\n');
-                        
-                        const shipmentDate = extractAttribute(row, 'shipment date') || "";
-                        
-                        const rawDesc = extractAttribute(row, 'item description') || "";
-                        const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/); 
-                        const qtyVal = qtyMatch ? qtyMatch[0] : "1"; 
-                        const englishName = rawDesc.trim();
-                        const vietnameseName = translateProductName(englishName);
-                        const ProductName = vietnameseName ? `${englishName}\n${vietnameseName}` : englishName;
 
+                        const shipmentDate = extractAttribute(row, 'shipment date') || "";
+
+                        const rawDesc = extractAttribute(row, 'item description') || "";
+                        const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/);
+                        const qtyVal = qtyMatch ? qtyMatch[0] : "1";
+                        const englishName = rawDesc ? cleanProductKey(rawDesc) : "";
+                        const vietnameseName = translateProductName(englishName);
+                        const ProductName = vietnameseName ? `${englishName}\n(${vietnameseName})` : englishName;
+                        console.log('rawDesc:', rawDesc);
+                        console.log('englishName:', englishName);
+                        console.log('vietnameseName:', vietnameseName);
                         // 🛠 TÍNH TOÁN: Lấy Quantity * 30
                         const numericQty = parseFloat(qtyVal) || 1;
-                        const totalAmount = (30 * numericQty).toFixed(1); 
+                        const totalAmount = (30 * numericQty).toFixed(1);
 
                         return {
-                            waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random()*1000)}`,
+                            waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random() * 1000)}`,
                             fields: [
                                 { val: shipmentDate, range: "F10:F10" },
                                 { val: extractAttribute(row, 'recipient name'), range: "B12:B12" },
                                 { val: fullAddress, range: "B13:B13" },
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
-                                { val: ProductName, range: "B17:B17" }, 
+                                { val: ProductName, range: "B17:B17" },
                                 // Bắn xuống dòng Sản Phẩm (Dòng 17)
-                                { val: qtyVal, range: "E17:E17" },           
-                                { val: totalAmount, range: "F17:F17" },      
+                                { val: qtyVal, range: "E17:E17" },
+                                { val: totalAmount, range: "F17:F17" },
                                 // Bắn luôn kết quả chốt hạ xuống dòng Total (Dòng 18)
-                                { val: qtyVal, range: "E18:E18" },           
-                                { val: totalAmount, range: "F18:F18" }       
+                                { val: qtyVal, range: "E18:E18" },
+                                { val: totalAmount, range: "F18:F18" }
                             ]
                         };
                     });
@@ -291,7 +293,7 @@ app.post('/webhook/event', async (req, res) => {
                                 elements: [
                                     { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}\n📄 **Số Files:** ${createdSheets.length}` } },
                                     { tag: 'hr' },
-                                    { tag: 'action', actions: actions.slice(0, 5) } ,
+                                    { tag: 'action', actions: actions.slice(0, 5) },
                                     { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
                                 ]
                             })

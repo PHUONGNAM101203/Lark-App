@@ -23,10 +23,9 @@ function cleanProductKey(rawDesc) {
 }
 
 function translateProductName(rawDesc) {
-  const normalized = cleanProductKey(rawDesc);
-  if (!normalized) return '';
-  const exactKey = Object.keys(exactTranslationMap).find(key => normalizeText(key).toLowerCase() === normalizeText(normalized).toLowerCase());
+  if (!rawDesc) return '';
+  const exactKey = Object.keys(exactTranslationMap).find(key => normalizeText(key).toLowerCase() === normalizeText(rawDesc).toLowerCase());
   return exactKey ? exactTranslationMap[exactKey] : '';
 }
 
-module.exports = { translateProductName };
+module.exports = { translateProductName, cleanProductKey };
