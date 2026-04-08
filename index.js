@@ -109,7 +109,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     }
 
     // C. Style
-    const borderLine = { style: "SOLID", color: "#000000" };
     const stylePayload = {
         data: [
             { ranges: [`${templateSheetId}!A1:C4`], style: { hAlign: 1, vAlign: 1 } },
@@ -119,8 +118,8 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
             { ranges: [`${templateSheetId}!B12:F15`], style: { hAlign: 0, vAlign: 0 } },
             { ranges: [`${templateSheetId}!A8:F8`], style: { font: { bold: true }, hAlign: 1 } },
             { ranges: [`${templateSheetId}!A18:F18`], style: { font: { bold: true } } },
-            { ranges: [`${templateSheetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
-            { ranges: [`${templateSheetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 1 } }
+            { ranges: [`${templateSheetId}!A16:F18`], style: { borderType: "FULL_BORDER", borderColor: "#000000" } },
+            { ranges: [`${templateSheetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 1 } },
         ]
     };
     await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
@@ -279,19 +278,19 @@ app.post('/webhook/event', async (req, res) => {
                         tag: 'button', text: { tag: 'plain_text', content: `${sheet.title} (${sheet.rowCount})` }, type: 'primary', url: sheet.url
                     }));
 
-                    const finalLogText = debugLogs.join('\n').substring(0, 3000);
+                    // const finalLogText = debugLogs.join('\n').substring(0, 3000);
 
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
                         data: {
                             msg_type: 'interactive',
                             content: JSON.stringify({
-                                header: { title: { tag: 'plain_text', content: '⚡ TỐC ĐỘ: TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
+                                header: { title: { tag: 'plain_text', content: 'TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}\n🚀 **Đã tối ưu:** Nhân bản Template siêu tốc!` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
                                     { tag: 'hr' },
                                     { tag: 'action', actions: actions.slice(0, 5) },
-                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
+                                    // { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
                                 ]
                             })
                         }
