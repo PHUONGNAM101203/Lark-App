@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 const Papa = require('papaparse');
 const { getCountryName } = require('./countryCodes');
+const { translateProductName } = require('./translations');
 const fs = require('fs');
 const path = require('path'); 
 // ❌ ĐÃ XÓA thư viện form-data rác, sử dụng FormData gốc của hệ thống cho mượt!
@@ -117,7 +118,9 @@ app.post('/webhook/event', async (req, res) => {
                         const rawDesc = extractAttribute(row, 'item description') || "";
                         const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/); 
                         const qtyVal = qtyMatch ? qtyMatch[0] : "1"; 
-                        const cleanProductName = rawDesc.replace(/^(\d+(\.\d+)?)\s*/, '').trim();
+                        const englishName = rawDesc.replace(/^(\d+(\.\d+)?)\s*/, '').trim();
+                        const vietnameseName = translateProductName(englishName);
+                        const ProductName = vietnameseName ? `${englishName}\n${vietnameseName}` : englishName;
 
                         return {
                             waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random()*1000)}`,
@@ -127,7 +130,7 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: fullAddress, range: "B13:B13" },
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
-                                { val: cleanProductName, range: "B17:B17" }, 
+                                { val: ProductName, range: "B17:B17" }, 
                                 { val: qtyVal, range: "E17:E17" }           
                             ]
                         };
