@@ -5,14 +5,15 @@ const lark = require('@larksuiteoapi/node-sdk');
 const Papa = require('papaparse');
 const { getCountryName } = require('./countryCodes');
 const fs = require('fs');
+const path = require('path'); 
+// ❌ ĐÃ XÓA thư viện form-data rác, sử dụng FormData gốc của hệ thống cho mượt!
 
 const app = express();
 app.use(express.json());
 
 // ==========================================
-// 🔑 TOKEN USER 
+// 🔑 BỘ NHỚ ĐỆM
 // ==========================================
-const USER_TOKEN = "t-g206483J6SFYUPBMPKEAEZYQYIR5HC66OA5LKATR";
 const processedEvents = new Set();
 
 // ==========================================
@@ -49,26 +50,26 @@ const INVOICE_TEMPLATE = [
     ["", "", "", "", "", ""],
     ["", "", "", "", "", ""],
     ["", "", "", "", "", ""],
-    ["", "", "", "", "", ""], // A1:C4 sẽ dùng để chèn LOGO
+    ["", "", "", "", "", ""], 
     ["WILD AND KING COMPANY LIMITED", "", "", "", "", ""],
     ["K10/7B Pham Van Nghi, Thanh Khe ward", "", "", "", "", ""],
     ["Da Nang city, Viet Nam", "", "", "", "", ""],
     ["COMMERCIAL INVOICE", "", "", "", "", ""],
     ["", "", "", "", "INVOICE NO:", ""],
-    ["", "", "", "", "DATE:", ""], // Dòng 10 (Index 9)
+    ["", "", "", "", "DATE:", ""], 
     ["", "", "", "", "CUSTOMER ID:", ""],
-    ["Buyer:", "", "", "", "", ""], // Dòng 12
-    ["To", "", "", "", "", ""],    // Dòng 13
-    ["Email", "", "", "", "", ""], // Dòng 14
-    ["Phone", "", "", "", "", ""], // Dòng 15
-    ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"], // Dòng 16 (Header)
-    ["1", "", "Pair", "", "", "0.0"], // Dòng 17
-    ["Total", "", "", "", "0", "0.0"], // Dòng 18
-    ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""] // Dòng 19
+    ["Buyer:", "", "", "", "", ""], 
+    ["To", "", "", "", "", ""],    
+    ["Email", "", "", "", "", ""], 
+    ["Phone", "", "", "", "", ""], 
+    ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"], 
+    ["1", "", "Pair", "", "", "0.0"], 
+    ["Total", "", "", "", "0", "0.0"], 
+    ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""] 
 ];
 
 // =====================================================================
-// 🟢 WEBHOOK 1: VẼ FORM, IN ĐẬM, TÔ MÀU, KẺ BẢNG, GỘP Ô, LỌC SỐ
+// 🟢 WEBHOOK CHÍNH
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
@@ -91,7 +92,7 @@ app.post('/webhook/event', async (req, res) => {
                     console.log(`\n========================================`);
                     console.log(`📂 BẮT ĐẦU TẠO HÓA ĐƠN TỪ FILE: ${file_name}`);
 
-                    // 1. TẢI FILE
+                    // ✅ LẤY TOKEN MỚI TINH ĐỂ KHÔNG BAO GIỜ BỊ HẾT HẠN
                     const tokenRes = await client.auth.tenantAccessToken.internal({ data: { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }});
                     const tenantToken = tokenRes.tenant_access_token;
                     
@@ -100,23 +101,19 @@ app.post('/webhook/event', async (req, res) => {
                     let csvString = fileBuffer.toString('utf-8').replace(/^\uFEFF/, '');
                     const parsed = Papa.parse(csvString, { header: true, skipEmptyLines: 'greedy', dynamicTyping: true, transformHeader: (h) => h.trim() });
 
-                    // 2. CHUẨN HÓA DATA & XỬ LÝ SỐ QUANTITY
+                    // CHUẨN HÓA DỮ LIỆU
                     const rowsData = parsed.data.map(row => {
                         const addr1 = extractAttribute(row, 'recipient address 1');
                         const addr2 = extractAttribute(row, 'recipient address 2');
                         const city = extractAttribute(row, 'recipient city');
                         const zip = extractAttribute(row, 'postal code');
                         
-                        // ✅ ĐÃ FIX LỖI TRÙNG BIẾN (Gộp tìm kiếm vào 1 dòng duy nhất)
                         const rawCountry = extractAttribute(row, 'recipient country') || extractAttribute(row, 'country');
                         const country = rawCountry ? getCountryName(rawCountry) : "";
                         
                         const fullAddress = [addr1, addr2, city, `${zip} ${country}`.trim()].filter(Boolean).join('\n');
-
-                        // LẤY SHIPMENT DATE
                         const shipmentDate = extractAttribute(row, 'shipment date') || "";
 
-                        // LỌC QUANTITY
                         const rawDesc = extractAttribute(row, 'item description') || "";
                         const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/); 
                         const qtyVal = qtyMatch ? qtyMatch[0] : "1"; 
@@ -125,7 +122,7 @@ app.post('/webhook/event', async (req, res) => {
                         return {
                             waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random()*1000)}`,
                             fields: [
-                                { val: shipmentDate, range: "F10:F10" },            // ✅ Gắn Date vào vị trí F10
+                                { val: shipmentDate, range: "F10:F10" },
                                 { val: extractAttribute(row, 'recipient name'), range: "B12:B12" },
                                 { val: fullAddress, range: "B13:B13" },
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
@@ -136,117 +133,108 @@ app.post('/webhook/event', async (req, res) => {
                         };
                     });
 
-                    // 3. TẠO SPREADSHEET TỔNG
+                    // TẠO SPREADSHEET TỔNG 
                     console.log(`📝 Đang tạo Spreadsheet Invoices...`);
                     const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
                         method: 'POST',
-                        headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ title: `Invoices: ${file_name}` })
                     });
                     const createData = await createRes.json();
                     const ssToken = createData.data.spreadsheet.spreadsheet_token;
                     const ssUrl = createData.data.spreadsheet.url;
 
-                    // 4. TẠO TAB CHO TỪNG ĐƠN HÀNG
+                    // TẠO TAB CHO TỪNG ĐƠN HÀNG
                     const tabRequests = rowsData.map(r => ({ addSheet: { properties: { title: r.waybillNumber } } }));
                     await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
                         method: 'POST',
-                        headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({ requests: tabRequests })
                     });
 
-                    const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, { method: 'GET', headers: { 'Authorization': `Bearer ${USER_TOKEN}` }});
+                    const queryRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, { method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }});
                     const queryData = await queryRes.json();
                     const sheetIdMap = {};
                     if (queryData.data && queryData.data.sheets) {
                         queryData.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
                     }
 
-                    // 5. VẼ FORM, TÔ MÀU, KẺ BẢNG, GỘP Ô, CHÈN LOGO
-                    console.log(`🚀 Bắt đầu Trang trí Template (Size 13, Kẻ Bảng, Gộp Ô)...`);
+                    // VẼ FORM VÀ TRANG TRÍ
+                    console.log(`🚀 Bắt đầu Trang trí Template (Size 13, Gộp Ô, Kẻ Bảng, Logo)...`);
                     for (const r of rowsData) {
                         const targetId = sheetIdMap[r.waybillNumber];
                         if (!targetId) continue;
 
-                        // 🛠 BƯỚC 5A: Dán Template chữ thô
+                        // 🛠 1. Dán Template chữ thô
                         await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
                             method: 'PUT',
-                            headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 🛠 BƯỚC 5B: GỘP Ô (Merge Cells) CHỐNG TRÀN CHỮ
+                        // 🛠 2. GỘP Ô (Merge Cells)
                         const mergeRanges = [
-                            `${targetId}!A8:F8`,   // COMMERCIAL INVOICE
-                            `${targetId}!A18:D18`, // Total
-                            `${targetId}!A19:F19`, // SAY: US DOLLARS...
-                            `${targetId}!B12:F12`, // Buyer Name
-                            `${targetId}!B13:F13`, // Buyer Address
-                            `${targetId}!B14:F14`, // Email
-                            `${targetId}!B15:F15`  // Phone
+                            `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
+                            `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
                         ];
                         for (const mRange of mergeRanges) {
-                            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
+                            const mergeRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
                                 method: 'POST',
-                                headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
                             });
+                            const mergeLog = await mergeRes.json();
+                            if(mergeLog.code !== 0) console.log(`   ⚠️ Lỗi Gộp Ô:`, mergeLog.msg);
                         }
 
-                        // 🛠 BƯỚC 5C: ĐỊNH DẠNG STYLE & KẺ BẢNG
+                        // 🛠 3. ĐỊNH DẠNG STYLE VÀ KẺ BẢNG (Đã fix lỗi Font "13")
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
-                                {   // 1. Ép toàn bộ tờ giấy về Font Size 13pt
-                                    ranges: [`${targetId}!A1:F20`],
-                                    style: { font: { fontSize: "13pt" } }
-                                },
-                                {   // 2. In đậm & Căn giữa chữ COMMERCIAL INVOICE
-                                    ranges: [`${targetId}!A8:A8`],
-                                    style: { font: { bold: true, fontSize: "13pt" }, hAlign: 2 }
-                                },
-                                {   // 3. In đậm Tên cty và dòng Total
-                                    ranges: [`${targetId}!A5:A5`, `${targetId}!A18:A18`],
-                                    style: { font: { bold: true, fontSize: "13pt" } }
-                                },
-                                {   // 4. ✅ KẺ BẢNG (Borders) xung quanh khu vực Sản phẩm
-                                    ranges: [`${targetId}!A16:F18`],
-                                    style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine } }
-                                },
-                                {   // 5. Bôi màu nền xám, in đậm cho Thanh Header Bảng
-                                    ranges: [`${targetId}!A16:F16`],
-                                    style: { font: { bold: true, fontSize: "13pt" }, backColor: "#D9D9D9", hAlign: 2 }
-                                }
+                                { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: "13" } } },
+                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: "13" }, hAlign: 2 } },
+                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: "13" } } },
+                                // ✅ Ép căn Lề Trái (hAlign: 1) và Lề Trên (vAlign: 0) cho cụm Buyer -> Phone
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: "13" } } },
+                                { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
+                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true, fontSize: "13" }, backColor: "#D9D9D9", hAlign: 2 } }
                             ]
                         };
-                        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
+                        const styleRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
                             method: 'PUT',
-                            headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify(stylePayload)
                         });
+                        const styleLog = await styleRes.json();
+                        if(styleLog.code !== 0) console.log(`   ⚠️ Lỗi Tô Màu/Style:`, styleLog.msg);
 
-                        // 🛠 BƯỚC 5D: CHÈN LOGO TỪ FOLDER PUBLIC 
+                        // 🛠 4. CHÈN LOGO (Sử dụng Blob và FormData nguyên thủy của hệ thống)
                         try {
-                            if (fs.existsSync('./public/logo.png')) {
-                                const imgBuffer = fs.readFileSync('./public/logo.png');
-                                const imgBlob = new Blob([imgBuffer], { type: 'image/png' });
+                            const logoPath = path.join(process.cwd(), 'public', 'logo.png');
+                            if (fs.existsSync(logoPath)) {
+                                const imgBuffer = fs.readFileSync(logoPath);
+                                const blob = new Blob([imgBuffer], { type: 'image/png' });
                                 
-                                const form = new FormData();
-                                form.append('range', `${targetId}!A1:C4`); 
-                                form.append('image', imgBlob, 'logo.png');
+                                const form = new FormData(); // FormData gốc của hệ thống (Node 18+)
+                                form.append('range', `${targetId}!A1:C4`);
+                                form.append('image', blob, 'logo.png');
                                 form.append('name', 'logo.png');
 
-                                await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
+                                const imgRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
                                     method: 'POST',
-                                    headers: { 'Authorization': `Bearer ${USER_TOKEN}` }, 
+                                    headers: { 'Authorization': `Bearer ${tenantToken}` }, // Không set Content-Type thủ công, để hệ thống tự sinh Boundary
                                     body: form
                                 });
+                                const imgLog = await imgRes.json();
+                                if(imgLog.code !== 0) console.log(`   ⚠️ Lỗi Chèn Ảnh:`, imgLog.msg);
+                            } else {
+                                console.log(`   ⚠️ Bỏ qua Ảnh: Không tìm thấy file Logo tại ${logoPath}`);
                             }
                         } catch (imgErr) {
-                            console.error(`   ❌ Lỗi chèn ảnh:`, imgErr.message);
+                            console.error(`   ❌ Sự cố cục bộ khi xử lý ảnh:`, imgErr.message);
                         }
 
-                        // 🛠 BƯỚC 5E: Bắn các biến (Tên, Địa chỉ, Date, Qty...) vào form
+                        // 🛠 5. BẮN DỮ LIỆU ĐÃ LỌC VÀO CÁC Ô TƯƠNG ỨNG
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -254,7 +242,7 @@ app.post('/webhook/event', async (req, res) => {
                         if (valueRanges.length > 0) {
                             await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
                                 method: 'POST',
-                                headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
+                                headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ valueRanges: valueRanges })
                             });
                             console.log(`   ✅ Hoàn tất hóa đơn: [${r.waybillNumber}]`);
@@ -272,22 +260,16 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '✅ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Đã áp dụng Size 13, **Kẻ Bảng**, **Gộp Ô (Merge)**, và gắn **Shipment Date**!` } },
-                                    {
-                                        tag: 'action',
-                                        actions: [
-                                            { tag: 'button', text: { tag: 'plain_text', content: '🌐 Mở Lark Sheet' }, type: 'primary', url: ssUrl }
-                                        ]
-                                    }
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Hệ thống đã Kẻ Bảng, In đậm, Gộp Ô Căn Trái, Ép Font 13 và Bắn Logo thành công!` } },
+                                    { tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: '🌐 Mở Lark Sheet' }, type: 'primary', url: ssUrl }] }
                                 ]
                             })
                         }
                     });
-                    console.log(`🎉 HOÀN TẤT QUY TRÌNH!\n========================================`);
                 }
             }
         } catch (error) {
-            console.error("❌ LỖI HỆ THỐNG:", error.message);
+            console.error("\n❌ LỖI HỆ THỐNG:", error.message);
         }
     }
     return res.status(200).json({ success: true });
