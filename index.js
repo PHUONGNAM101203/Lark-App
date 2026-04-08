@@ -151,17 +151,22 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 🛠 2. ĐỊNH DẠNG STYLE TRƯỚC (✅ Fix lỗi fontSize bằng chuỗi "13")
+                        // 🛠 2. ĐỊNH DẠNG STYLE (BỎ ÉP FONT, GIỮ LẠI TẤT CẢ CÁC STYLE KHÁC)
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
-                                { ranges: [`${targetId}!A1:F20`], style: { font: { fontSize: "13" } } },
+                                // Căn Giữa & Giữa cho ô Logo để ảnh nằm ngay ngắn
                                 { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
-                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true, fontSize: "13" }, hAlign: 2 } },
-                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true, fontSize: "13" } } },
-                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0, font: { fontSize: "13" } } },
+                                // In đậm & Căn giữa COMMERCIAL INVOICE
+                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 2 } },
+                                // In đậm tên Cty và dòng Total
+                                { ranges: [`${targetId}!A5:F5`, `${targetId}!A18:F18`], style: { font: { bold: true } } },
+                                // Căn Trái & Trên cho cụm Thông tin Khách hàng (Buyer -> Phone)
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0 } },
+                                // Kẻ bảng xung quanh Sản phẩm
                                 { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
-                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true, fontSize: "13" }, backColor: "#D9D9D9", hAlign: 2 } }
+                                // Đổ màu nền Xám, In đậm, Căn giữa cho Header Bảng
+                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 2 } }
                             ]
                         };
                         
@@ -177,9 +182,9 @@ app.post('/webhook/event', async (req, res) => {
                             debugLogs.push(`✅ Đã áp Style cho [${r.waybillNumber}]`);
                         }
 
-                        // 🛠 3. GỘP Ô (Merge Cells) SAU KHI ĐÃ STYLE (Sẽ tạo khoảng trống bự cho Logo)
+                        // 🛠 3. GỘP Ô (Merge Cells) SAU KHI ĐÃ STYLE 
                         const mergeRanges = [
-                            `${targetId}!A1:C4`, // Gộp vùng A1:C4 thành 1 khối
+                            `${targetId}!A1:C4`, // Gộp ô Logo
                             `${targetId}!A8:F8`, `${targetId}!A18:D18`, `${targetId}!A19:F19`, 
                             `${targetId}!B12:F12`, `${targetId}!B13:F13`, `${targetId}!B14:F14`, `${targetId}!B15:F15`
                         ];
@@ -193,7 +198,7 @@ app.post('/webhook/event', async (req, res) => {
                             if(mergeLog.code !== 0) debugLogs.push(`❌ Lỗi Merge ${mRange}: ${mergeLog.msg}`);
                         }
 
-                        // 🛠 4. CHÈN LOGO (Bằng Array Byte JSON như sếp yêu cầu)
+                        // 🛠 4. CHÈN LOGO
                         try {
                             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
                             if (fs.existsSync(logoPath)) {
@@ -201,7 +206,7 @@ app.post('/webhook/event', async (req, res) => {
                                 const imageByteArray = Array.from(imgBuffer);
                                 
                                 const payload = {
-                                    range: `${targetId}!A1:A1`, // Chèn vào ô A1, vì nó đã gộp A1:C4 nên hình sẽ bung to lấp đầy
+                                    range: `${targetId}!A1:A1`, 
                                     image: imageByteArray,
                                     name: 'logo.png'
                                 };
