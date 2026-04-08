@@ -7,7 +7,6 @@ const { getCountryName } = require('./countryCodes');
 const { translateProductName } = require('./translations');
 const fs = require('fs');
 const path = require('path'); 
-const FormData = require('form-data'); 
 
 const app = express();
 app.use(express.json());
@@ -36,7 +35,7 @@ function extractAttribute(row, keyword) {
     return key && row[key] ? String(row[key]).trim() : "";
 }
 
-// 📝 TEMPLATE ĐÃ ĐƯỢC CHUẨN HÓA (Giá mặc định 30)
+// 📝 TEMPLATE ĐÃ CHUẨN HÓA (Giá mặc định 30)
 const INVOICE_TEMPLATE = [
     ["", "", "", "", "", ""],
     ["", "", "", "", "", ""],
@@ -54,7 +53,7 @@ const INVOICE_TEMPLATE = [
     ["Email", "", "", "", "", ""], 
     ["Phone", "", "", "", "", ""], 
     ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"], 
-    ["1", "", "Pair", "30", "", "0.0"], 
+    ["1", "", "Pair", "30", "", "0.0"], // <--- Set cứng 30
     ["Total", "", "", "", "0", "0.0"], 
     ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""] 
 ];
@@ -106,6 +105,7 @@ app.post('/webhook/event', async (req, res) => {
                         const vietnameseName = translateProductName(englishName);
                         const ProductName = vietnameseName ? `${englishName}\n${vietnameseName}` : englishName;
 
+                        // 🛠 TÍNH TOÁN: Lấy Quantity * 30
                         const numericQty = parseFloat(qtyVal) || 1;
                         const totalAmount = (30 * numericQty).toFixed(1); 
 
@@ -118,8 +118,10 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
                                 { val: ProductName, range: "B17:B17" }, 
+                                // Bắn xuống dòng Sản Phẩm (Dòng 17)
                                 { val: qtyVal, range: "E17:E17" },           
                                 { val: totalAmount, range: "F17:F17" },      
+                                // Bắn luôn kết quả chốt hạ xuống dòng Total (Dòng 18)
                                 { val: qtyVal, range: "E18:E18" },           
                                 { val: totalAmount, range: "F18:F18" }       
                             ]
@@ -161,7 +163,7 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // BƯỚC 2. ĐIỀN DỮ LIỆU VÀO FORM TRƯỚC
+                        // BƯỚC 2. Bắn Data
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -173,20 +175,17 @@ app.post('/webhook/event', async (req, res) => {
                             });
                         }
 
-                        // 🛠 BƯỚC 3. GỘP Ô THÔNG MINH 
+                        // BƯỚC 3. Gộp Ô (Merge Cells)
                         const mergeRanges = [
                             `${targetId}!A1:C4`, // Gộp ô Logo
-                            // 🚀 ĐÃ THÊM: Gộp 3 dòng Thông tin công ty từ cột A đến F
-                            `${targetId}!A5:F5`, // WILD AND KING COMPANY LIMITED
-                            `${targetId}!A6:F6`, // K10/7B Pham Van Nghi...
-                            `${targetId}!A7:F7`, // Da Nang city, Viet Nam
-                            
+                            `${targetId}!A5:F5`, // Tên công ty
+                            `${targetId}!A6:F6`, // Địa chỉ cty 1
+                            `${targetId}!A7:F7`, // Địa chỉ cty 2
                             `${targetId}!A8:F8`, // Dòng Invoice
                             `${targetId}!A18:D18`, // Dòng Total
                             `${targetId}!A19:F19`  // Dòng SAY: US DOLLARS...
                         ];
 
-                        // Gộp ô rẽ nhánh (Chỉ gộp nếu khách hàng có nội dung dài)
                         const buyerName = r.fields[1].val;
                         const addressTo = r.fields[2].val;
                         const emailData = r.fields[3].val;
@@ -205,29 +204,31 @@ app.post('/webhook/event', async (req, res) => {
                             });
                         }
 
-                        // BƯỚC 4. ĐỊNH DẠNG STYLE
+                        // BƯỚC 4. ĐỊNH DẠNG STYLE (Đã sửa lỗi hAlign: 0 = Căn Trái)
                         const borderLine = { style: "SOLID", color: "#000000" };
                         const stylePayload = {
                             data: [
-                                // Căn Giữa & Giữa cho ô Logo 
-                                { ranges: [`${targetId}!A1:C4`], style: { hAlign: 2, vAlign: 1 } },
+                                // Căn Giữa (1) cho ô Logo 
+                                { ranges: [`${targetId}!A1:C4`], style: { hAlign: 1, vAlign: 1 } },
                                 
-                                // 🚀 ĐÃ THÊM: Ép căn Trái & Trên cho 3 dòng Thông tin công ty (A5, A6, A7) để nó không bị nhảy ra giữa
-                                { ranges: [`${targetId}!A5:F5`], style: { font: { bold: true }, hAlign: 1, vAlign: 1 } },
-                                { ranges: [`${targetId}!A6:F7`], style: { hAlign: 1, vAlign: 1 } },
+                                // 🚀 Ép CĂN TRÁI (0) & TRÊN (0) cho 3 dòng Thông tin công ty
+                                { ranges: [`${targetId}!A5:F5`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
+                                { ranges: [`${targetId}!A6:F7`], style: { hAlign: 0, vAlign: 0 } },
 
-                                // In đậm nhãn Buyer, To, Email, Phone
-                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true } } },
-                                // Căn lề trái & trên cho toàn bộ khu vực Khách hàng
-                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 1, vAlign: 0 } },
-                                // In đậm & Căn giữa COMMERCIAL INVOICE
-                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 2 } },
+                                // 🚀 In đậm, ép CĂN TRÁI (0) & TRÊN (0) cho các Nhãn (Buyer, To, Email, Phone)
+                                { ranges: [`${targetId}!A12:A15`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
+                                
+                                // 🚀 Căn TRÁI (0) & TRÊN (0) cho toàn bộ nội dung của Khách hàng
+                                { ranges: [`${targetId}!B12:F15`], style: { hAlign: 0, vAlign: 0 } },
+                                
+                                // In đậm & Căn giữa (1) COMMERCIAL INVOICE
+                                { ranges: [`${targetId}!A8:F8`], style: { font: { bold: true }, hAlign: 1 } },
                                 // In đậm dòng Total
                                 { ranges: [`${targetId}!A18:F18`], style: { font: { bold: true } } },
                                 // Kẻ bảng xung quanh Sản phẩm
                                 { ranges: [`${targetId}!A16:F18`], style: { border: { top: borderLine, bottom: borderLine, left: borderLine, right: borderLine, innerHorizontal: borderLine, innerVertical: borderLine } } },
-                                // Đổ màu nền Xám, In đậm, Căn giữa cho Header Bảng
-                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 2 } }
+                                // Đổ màu nền Xám, In đậm, Căn giữa (1) cho Header Bảng
+                                { ranges: [`${targetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 1 } }
                             ]
                         };
                         
