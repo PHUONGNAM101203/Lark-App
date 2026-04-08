@@ -68,7 +68,7 @@ const INVOICE_TEMPLATE = [
 ];
 
 // =====================================================================
-// 🟢 WEBHOOK 1: VẼ FORM TRẮNG, IN ĐẬM, TÔ MÀU, CHÈN LOGO
+// 🟢 WEBHOOK 1: VẼ FORM TRẮNG, IN ĐẬM, TÔ MÀU, SIZE 13, LỌC SỐ LƯỢNG
 // =====================================================================
 app.post('/webhook/event', async (req, res) => {
     const data = req.body || {};
@@ -100,18 +100,24 @@ app.post('/webhook/event', async (req, res) => {
                     let csvString = fileBuffer.toString('utf-8').replace(/^\uFEFF/, '');
                     const parsed = Papa.parse(csvString, { header: true, skipEmptyLines: 'greedy', dynamicTyping: true, transformHeader: (h) => h.trim() });
 
-                    // 2. CHUẨN HÓA DATA (SỬA LỖI ĐỊA CHỈ KHÔNG XUỐNG DÒNG)
+                    // 2. CHUẨN HÓA DATA
                     const rowsData = parsed.data.map(row => {
                         const addr1 = extractAttribute(row, 'recipient address 1');
                         const addr2 = extractAttribute(row, 'recipient address 2');
                         const city = extractAttribute(row, 'recipient city');
                         const zip = extractAttribute(row, 'postal code');
                         const country = getCountryName(extractAttribute(row, 'recipient country'));
-                        const fullAddress = `${addr1} ${addr2} ${city} ${zip} ${country}`.replace(/\s+/g, ' ').trim();
-                        const country = extractAttribute(row, 'recipient country');
                         
-                        // Ghép mảng và lọc các dòng trống, tự động thêm ký tự \n để xuống dòng
                         const fullAddress = [addr1, addr2, city, `${zip} ${country}`.trim()].filter(Boolean).join('\n');
+
+                        // 🛠 LỌC SỐ LƯỢNG (QUANTITY) TỪ DESCRIPTION
+                        const rawDesc = extractAttribute(row, 'item description') || "";
+                        // Tìm con số đầu tiên (hỗ trợ cả số thập phân VD: 3.00)
+                        const qtyMatch = rawDesc.match(/^(\d+(\.\d+)?)/); 
+                        const qtyVal = qtyMatch ? qtyMatch[0] : "1"; // Mặc định là 1 nếu không có số
+                        
+                        // Cắt bỏ con số ở đầu câu để Tên sản phẩm gọn gàng hơn
+                        const cleanProductName = rawDesc.replace(/^(\d+(\.\d+)?)\s*/, '').trim();
 
                         return {
                             waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random()*1000)}`,
@@ -120,7 +126,8 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: fullAddress, range: "B13:B13" },
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
-                                { val: extractAttribute(row, 'item description'), range: "B17:B17" }
+                                { val: cleanProductName, range: "B17:B17" }, // Tên SP đã làm sạch số
+                                { val: qtyVal, range: "E17:E17" }           // Số lượng nhét vào E17
                             ]
                         };
                     });
@@ -151,8 +158,8 @@ app.post('/webhook/event', async (req, res) => {
                         queryData.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
                     }
 
-                    // 5. VẼ FORM, TÔ MÀU, CHÈN LOGO & BẮN DATA
-                    console.log(`🚀 Bắt đầu vẽ Template, chèn Logo và định dạng Style...`);
+                    // 5. VẼ FORM, TÔ MÀU, SIZE 13 CHUẨN & CHÈN LOGO
+                    console.log(`🚀 Bắt đầu vẽ Template, chèn Logo và định dạng Style (Size 13)...`);
                     for (const r of rowsData) {
                         const targetId = sheetIdMap[r.waybillNumber];
                         if (!targetId) continue;
@@ -164,17 +171,21 @@ app.post('/webhook/event', async (req, res) => {
                             body: JSON.stringify({ valueRange: { range: `${targetId}!A1:F19`, values: INVOICE_TEMPLATE } })
                         });
 
-                        // 🛠 BƯỚC 5B: ĐỊNH DẠNG STYLE (Bôi màu, in đậm, căn giữa)
+                        // 🛠 BƯỚC 5B: ĐỊNH DẠNG STYLE (Ép Size 13, In đậm, Bôi màu)
                         const stylePayload = {
                             data: [
-                                {   // In đậm Tên cty, Commercial Invoice và dòng Total
-                                    ranges: [`${targetId}!A5:A8`, `${targetId}!A18:F18`],
-                                    style: { font: { bold: true } }
+                                {   // 1. Ép toàn bộ tờ giấy về Font Size 13pt
+                                    ranges: [`${targetId}!A1:F20`],
+                                    style: { font: { fontSize: "13pt" } }
                                 },
-                                {   // Bôi màu nền xám, in đậm cho Thanh Header
+                                {   // 2. In đậm Tên cty, Commercial Invoice và dòng Total (Giữ Size 13)
+                                    ranges: [`${targetId}!A5:A8`, `${targetId}!A18:F18`],
+                                    style: { font: { bold: true, fontSize: "13pt" } }
+                                },
+                                {   // 3. Bôi màu nền xám, in đậm cho Thanh Header Bảng (Giữ Size 13)
                                     ranges: [`${targetId}!A16:F16`],
                                     style: { 
-                                        font: { bold: true }, 
+                                        font: { bold: true, fontSize: "13pt" }, 
                                         backColor: "#D9D9D9", 
                                         hAlign: 2 // Căn giữa
                                     }
@@ -189,21 +200,20 @@ app.post('/webhook/event', async (req, res) => {
                         const styleLog = await styleRes.json();
                         if(styleLog.code !== 0) console.log(`   ⚠️ Lỗi tô màu: ${styleLog.msg}`);
 
-                        // 🛠 BƯỚC 5C: CHÈN LOGO TỪ FOLDER PUBLIC (Bằng Native Fetch API)
+                        // 🛠 BƯỚC 5C: CHÈN LOGO TỪ FOLDER PUBLIC 
                         try {
                             if (fs.existsSync('./public/logo.png')) {
                                 const imgBuffer = fs.readFileSync('./public/logo.png');
-                                // Khởi tạo Blob bản địa của Nodejs để nạp ảnh
                                 const imgBlob = new Blob([imgBuffer], { type: 'image/png' });
                                 
                                 const form = new FormData();
-                                form.append('range', `${targetId}!A1:C4`); // Hình logo sẽ bao trùm vùng này
+                                form.append('range', `${targetId}!A1:C4`); 
                                 form.append('image', imgBlob, 'logo.png');
                                 form.append('name', 'logo.png');
 
                                 const imgRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
                                     method: 'POST',
-                                    headers: { 'Authorization': `Bearer ${USER_TOKEN}` }, // Fetch tự động thiết lập Content-Type Boundary
+                                    headers: { 'Authorization': `Bearer ${USER_TOKEN}` }, 
                                     body: form
                                 });
                                 const imgLog = await imgRes.json();
@@ -215,7 +225,7 @@ app.post('/webhook/event', async (req, res) => {
                             console.error(`   ❌ Lỗi hệ thống khi chèn ảnh:`, imgErr.message);
                         }
 
-                        // 🛠 BƯỚC 5D: Bắn các biến (Tên, Địa chỉ...) vào form
+                        // 🛠 BƯỚC 5D: Bắn các biến (Tên, Địa chỉ, Qty...) vào form
                         const valueRanges = r.fields.filter(f => f.val).map(f => ({
                             range: `${targetId}!${f.range}`, values: [[f.val]]
                         }));
@@ -226,7 +236,7 @@ app.post('/webhook/event', async (req, res) => {
                                 headers: { 'Authorization': `Bearer ${USER_TOKEN}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ valueRanges: valueRanges })
                             });
-                            console.log(`   ✅ Hoàn tất hóa đơn: [${r.waybillNumber}]`);
+                            console.log(`   ✅ Hoàn tất hóa đơn: [${r.waybillNumber}] | Số lượng lọc được: ${r.fields[5].val}`);
                         }
                     }
 
@@ -241,7 +251,7 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({
                                 header: { title: { tag: 'plain_text', content: '✅ TẠO HÓA ĐƠN HOÀN TẤT' }, template: "green" },
                                 elements: [
-                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Đã áp dụng Style (Màu nền, In đậm) và chèn Logo thành công!` } },
+                                    { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số lượng Invoice:** ${rowsData.length}\n🚀 Đã áp dụng Style (Màu nền, In đậm, **Size 13**) và tự động trích xuất số lượng (Qty)!` } },
                                     {
                                         tag: 'action',
                                         actions: [
