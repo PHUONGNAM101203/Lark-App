@@ -82,7 +82,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     // 🔓 1.5 MỞ QUYỀN MẶC ĐỊNH LÀ "EDIT" CHO MỌI NGƯỜI
     // =========================================================
     debugLogs.push(`🔓 Đang mở quyền Edit mặc định cho link...`);
-    await fetchWithRetry(`https://open.larksuite.com/open-apis/drive/v1/permissions/${ssToken}/public`, {
+    await fetch(`https://open.larksuite.com/open-apis/drive/v1/permissions/${ssToken}/public`, {
         method: 'PATCH',
         headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
