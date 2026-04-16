@@ -88,7 +88,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         body: JSON.stringify({
             // "tenant_editable": Bất kỳ ai trong công ty có link đều có thể sửa.
             // Nếu muốn mở ra ngoài công ty, có thể dùng "anyone_editable" (tùy cài đặt bảo mật của admin)
-            link_share_entity: "tenant_editable", 
+            link_share_entity: "tenant_editable",
             external_access: true
         })
     }).catch(err => debugLogs.push(`⚠️ Lỗi khi mở quyền Public: ${err.message}`));
@@ -159,18 +159,23 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const copyRequests = sheetTitles.map(title => ({
         copySheet: { source: { sheetId: templateSheetId }, destination: { title } }
     }));
-    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
+    const batchUpdateRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
         method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ requests: copyRequests })
     });
+    const batchUpdateData = await batchUpdateRes.json();
 
-    // 5. LẤY DANH SÁCH SHEET_ID MỚI
-    const queryRes2 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
-        method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
-    });
-    const queryData2 = await queryRes2.json();
+    // 5. LẤY DANH SÁCH SHEET_ID MỚI TỪ PHẢN HỒI (KHÔNG CẦN QUERY ĐỂ TRÁNH LAG KHI TẠO HÀNG LOẠT)
     const sheetIdMap = {};
-    queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
+    if (batchUpdateData.code === 0 && batchUpdateData.data && batchUpdateData.data.replies) {
+        batchUpdateData.data.replies.forEach((reply, idx) => {
+            if (reply.copySheet && reply.copySheet.properties) {
+                sheetIdMap[sheetTitles[idx]] = reply.copySheet.properties.sheetId;
+            }
+        });
+    } else {
+        debugLogs.push(`⚠️ Lỗi batch copy: ${JSON.stringify(batchUpdateData)}`);
+    }
 
     // 6. GOM TẤT CẢ DỮ LIỆU CÁ NHÂN VÀ ĐẨY BATCH 1 LẦN DUY NHẤT LÊN TẤT CẢ TABS
     debugLogs.push(`⚡ Đang điền dữ liệu hàng loạt...`);
@@ -188,13 +193,17 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     }
 
     if (allValueRanges.length > 0) {
-        // Chia nhỏ mảng data ra mỗi cục 150 requests để không quá tải Payload Lark
-        const rangeChunks = chunkArray(allValueRanges, 150);
+        // Chia nhỏ mảng data ra mỗi cục 80 requests để không gặp lỗi payload limit của Lark
+        const rangeChunks = chunkArray(allValueRanges, 80);
         for (const chunk of rangeChunks) {
-            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+            const res = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
                 method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ valueRanges: chunk })
             });
+            const data = await res.json();
+            if (data.code !== 0) {
+                debugLogs.push(`⚠️ Lỗi values batch update: ${JSON.stringify(data)}`);
+            }
         }
     }
 
@@ -300,7 +309,7 @@ app.post('/webhook/event', async (req, res) => {
                         tag: 'button', text: { tag: 'plain_text', content: `${sheet.title} (${sheet.rowCount})` }, type: 'primary', url: sheet.url
                     }));
 
-                    // const finalLogText = debugLogs.join('\n').substring(0, 3000);
+                    const finalLogText = debugLogs.join('\n').substring(0, 3000);
 
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
@@ -312,7 +321,7 @@ app.post('/webhook/event', async (req, res) => {
                                     { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
                                     { tag: 'hr' },
                                     { tag: 'action', actions: actions.slice(0, 5) },
-                                    // { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
+                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
                                 ]
                             })
                         }
