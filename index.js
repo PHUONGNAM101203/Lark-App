@@ -29,7 +29,7 @@ const CsvVaultSchema = new mongoose.Schema({
 const CsvVault = mongoose.models.CsvVault || mongoose.model('CsvVault', CsvVaultSchema, 'csv_storage');
 
 const client = new lark.Client({ appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET });
-const CHUNK_SIZE = 80; // Với thuật toán mới, Vercel có thể xử lý dễ dàng 100 rows/file
+const CHUNK_SIZE = 100;
 
 function extractAttribute(row, keyword) {
     const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
@@ -174,7 +174,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
 
     if (allValueRanges.length > 0) {
         // Chia nhỏ mảng data ra mỗi cục 150 requests để không quá tải Payload Lark
-        const rangeChunks = chunkArray(allValueRanges, 100);
+        const rangeChunks = chunkArray(allValueRanges, 150);
         for (const chunk of rangeChunks) {
             await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
                 method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
