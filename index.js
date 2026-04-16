@@ -63,7 +63,7 @@ const INVOICE_TEMPLATE = [
 ];
 
 // =========================================================================
-// 🔥 THUẬT TOÁN MỚI: TẠO TEMPLATE -> NHÂN BẢN -> CẬP NHẬT BATCH DATA
+// 🔥 THUẬT TOÁN ĐÃ FIX: CHIA NHỎ REQUEST COPY + BẮT LỖI CHẶT CHẼ
 // =========================================================================
 async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows, debugLogs) {
     const title = `${fileName.replace(/\.csv$/i, '')} - Part ${batchIndex + 1}`;
@@ -129,68 +129,155 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
 
     // D. Logo
     try {
-        const logoPath = path.join(process.cwd(), 'public', 'logo.png');
-        if (fs.existsSync(logoPath)) {
-            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_image`, {
+        // 1. TẠO FILE SPREADSHEET MỚI
+        const createRes = await fetch('https://open.larksuite.com/open-apis/sheets/v3/spreadsheets', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        const createData = await createRes.json();
+        if (createData.code !== 0) throw new Error(`Lỗi tạo file: ${createData.msg}`);
+        
+        const ssToken = createData.data.spreadsheet.spreadsheet_token;
+        const ssUrl = createData.data.spreadsheet.url;
+
+        // 2. LẤY ID CỦA SHEET MẶC ĐỊNH
+        const queryRes1 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
+            method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
+        });
+        const queryData1 = await queryRes1.json();
+        const templateSheetId = queryData1.data.sheets[0].sheet_id;
+
+        // 3. APPLY TEMPLATE (Values, Merge, Style)
+        // A. Values
+        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ valueRange: { range: `${templateSheetId}!A1:F19`, values: INVOICE_TEMPLATE } })
+        });
+
+        // B. Merge
+        const mergeRanges = [
+            `${templateSheetId}!A1:C4`, `${templateSheetId}!A5:F5`, `${templateSheetId}!A6:F6`,
+            `${templateSheetId}!A7:F7`, `${templateSheetId}!A8:F8`, `${templateSheetId}!A18:D18`,
+            `${templateSheetId}!A19:F19`, `${templateSheetId}!B12:F12`, `${templateSheetId}!B13:F13`,
+            `${templateSheetId}!B14:F14`, `${templateSheetId}!B15:F15`
+        ];
+        for (const mRange of mergeRanges) {
+            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/merge_cells`, {
                 method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ range: `${templateSheetId}!A1:A1`, image: Array.from(fs.readFileSync(logoPath)), name: 'logo.png' })
+                body: JSON.stringify({ range: mRange, mergeType: "MERGE_ALL" })
             });
         }
-    } catch (imgErr) { debugLogs.push(`⚠️ Lỗi logo template: ${imgErr.message}`); }
 
-    // 4. NHÂN BẢN TEMPLATE THÀNH N TABS (Tốc độ thần tốc)
-    debugLogs.push(`📝 Đang nhân bản thành ${rows.length} Tabs...`);
-    const sheetTitles = rows.map((row, index) => sanitizeSheetName(row.waybillNumber, index));
-    const copyRequests = sheetTitles.map(title => ({
-        copySheet: { source: { sheetId: templateSheetId }, destination: { title } }
-    }));
-    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
-        method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requests: copyRequests })
-    });
+        // C. Style
+        const stylePayload = {
+            data: [
+                { ranges: [`${templateSheetId}!A1:C4`], style: { hAlign: 1, vAlign: 1 } },
+                { ranges: [`${templateSheetId}!A5:F5`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
+                { ranges: [`${templateSheetId}!A6:F7`], style: { hAlign: 0, vAlign: 0 } },
+                { ranges: [`${templateSheetId}!A12:A15`], style: { font: { bold: true }, hAlign: 0, vAlign: 0 } },
+                { ranges: [`${templateSheetId}!B12:F15`], style: { hAlign: 0, vAlign: 0 } },
+                { ranges: [`${templateSheetId}!A8:F8`], style: { font: { bold: true }, hAlign: 1 } },
+                { ranges: [`${templateSheetId}!A18:F18`], style: { font: { bold: true } } },
+                { ranges: [`${templateSheetId}!A16:F18`], style: { borderType: "FULL_BORDER", borderColor: "#000000" } },
+                { ranges: [`${templateSheetId}!A16:F16`], style: { font: { bold: true }, backColor: "#D9D9D9", hAlign: 1 } },
+            ]
+        };
+        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/styles_batch_update`, {
+            method: 'PUT', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(stylePayload)
+        });
 
-    // 5. LẤY DANH SÁCH SHEET_ID MỚI
-    const queryRes2 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
-        method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
-    });
-    const queryData2 = await queryRes2.json();
-    const sheetIdMap = {};
-    queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
-
-    // 6. GOM TẤT CẢ DỮ LIỆU CÁ NHÂN VÀ ĐẨY BATCH 1 LẦN DUY NHẤT LÊN TẤT CẢ TABS
-    debugLogs.push(`⚡ Đang điền dữ liệu hàng loạt...`);
-    let allValueRanges = [];
-    for (let index = 0; index < rows.length; index++) {
-        const row = rows[index];
-        const targetId = sheetIdMap[sheetTitles[index]];
-        if (!targetId) continue;
-
-        const valueRanges = row.fields.filter(f => f.val).map(f => ({
-            range: `${targetId}!${f.range}`,
-            values: [[String(f.val)]]
-        }));
-        allValueRanges.push(...valueRanges);
-    }
-
-    if (allValueRanges.length > 0) {
-        // Chia nhỏ mảng data ra mỗi cục 150 requests để không quá tải Payload Lark
-        const rangeChunks = chunkArray(allValueRanges, 150);
-        for (const chunk of rangeChunks) {
-            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+        // 4. NHÂN BẢN TEMPLATE (Đã thêm cơ chế Batching & Bắt lỗi)
+        debugLogs.push(`📝 Đang nhân bản thành ${rows.length} Tabs...`);
+        const sheetTitles = rows.map((row, index) => sanitizeSheetName(row.waybillNumber, index));
+        
+        // CẮT NHỎ REQUEST RA MỖI LẦN CHỈ COPY 10 SHEETS (Giảm tải cho Lark)
+        const COPY_BATCH_SIZE = 10;
+        for (let i = 0; i < sheetTitles.length; i += COPY_BATCH_SIZE) {
+            const batchTitles = sheetTitles.slice(i, i + COPY_BATCH_SIZE);
+            const copyRequests = batchTitles.map(title => ({
+                copySheet: { source: { sheetId: templateSheetId }, destination: { title } }
+            }));
+            
+            const copyRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
                 method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ valueRanges: chunk })
+                body: JSON.stringify({ requests: copyRequests })
             });
+            const copyData = await copyRes.json();
+            
+            if (copyData.code !== 0) {
+                console.error("❌ Lỗi Copy Sheet:", copyData);
+                debugLogs.push(`⚠️ Lỗi khi copy sheets (từ ${i} đến ${i + batchTitles.length}): ${copyData.msg}`);
+            }
         }
+
+        // 5. LẤY DANH SÁCH SHEET_ID MỚI
+        const queryRes2 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
+            method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
+        });
+        const queryData2 = await queryRes2.json();
+        const sheetIdMap = {};
+        queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
+
+        // 6. ĐIỀN DỮ LIỆU
+        debugLogs.push(`⚡ Đang điền dữ liệu hàng loạt...`);
+        let allValueRanges = [];
+        let missingSheetsCount = 0;
+
+        for (let index = 0; index < rows.length; index++) {
+            const row = rows[index];
+            const expectedTitle = sheetTitles[index];
+            const targetId = sheetIdMap[expectedTitle];
+            
+            // Xử lý trường hợp sheet không được tạo thành công
+            if (!targetId) {
+                missingSheetsCount++;
+                console.log(`⚠️ Không tìm thấy ID cho sheet: ${expectedTitle}`);
+                continue; 
+            }
+
+            const valueRanges = row.fields.filter(f => f.val).map(f => ({
+                range: `${targetId}!${f.range}`,
+                values: [[String(f.val)]]
+            }));
+            allValueRanges.push(...valueRanges);
+        }
+
+        if (missingSheetsCount > 0) {
+            debugLogs.push(`🚨 CẢNH BÁO: Rớt ${missingSheetsCount} sheet không thể tạo.`);
+        }
+
+        if (allValueRanges.length > 0) {
+            const rangeChunks = chunkArray(allValueRanges, 150);
+            for (const chunk of rangeChunks) {
+                const updateRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+                    method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ valueRanges: chunk })
+                });
+                const updateData = await updateRes.json();
+                if (updateData.code !== 0) {
+                    console.error("❌ Lỗi Update Value:", updateData);
+                    debugLogs.push(`⚠️ Lỗi điền dữ liệu: ${updateData.msg}`);
+                }
+            }
+        }
+
+        // 7. DỌN DẸP
+        await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
+            method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requests: [{ deleteSheet: { sheetId: templateSheetId } }] })
+        });
+
+        debugLogs.push(`✅ Hoàn tất File: ${title}`);
+        return { title, url: ssUrl, rowCount: rows.length - missingSheetsCount };
+
+    } catch (error) {
+        console.error("🚨 Fatal Error trong quá trình tạo Batch:", error);
+        debugLogs.push(`❌ Lỗi nghiêm trọng: ${error.message}`);
+        return { title: `${fileName} (LỖI)`, url: "", rowCount: 0 };
     }
-
-    // 7. DỌN DẸP (Xóa cái Template gốc đi)
-    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
-        method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requests: [{ deleteSheet: { sheetId: templateSheetId } }] })
-    });
-
-    debugLogs.push(`✅ Hoàn tất File: ${title}`);
-    return { title, url: ssUrl, rowCount: rows.length };
 }
 
 
