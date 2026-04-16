@@ -17,9 +17,16 @@ function normalizeText(text) {
   return text ? text.trim().replace(/\s+/g, ' ') : '';
 }
 
+function getProductUnit(rawDesc) {
+  const text = normalizeText(rawDesc).toLowerCase();
+  if (text.includes('piece')) return 'Piece';
+  return 'Pair'; // mặc định là Pair
+}
+
 function cleanProductKey(rawDesc) {
-  const cleaned = normalizeText(rawDesc).replace(/^a\s+pair\s+of\s+/i, '');
-  return cleaned.replace(/^\d+(\.\d+)?\s+pairs?\s+of\s+/i, '');
+  let cleaned = normalizeText(rawDesc);
+  cleaned = cleaned.replace(/^(a|\d+(\.\d+)?)\s+(pair|piece)s?\s+of\s+/i, '');
+  return cleaned;
 }
 
 function translateProductName(rawDesc) {
@@ -28,4 +35,4 @@ function translateProductName(rawDesc) {
   return exactKey ? exactTranslationMap[exactKey] : '';
 }
 
-module.exports = { translateProductName, cleanProductKey };
+module.exports = { translateProductName, cleanProductKey, getProductUnit };

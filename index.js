@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const lark = require('@larksuiteoapi/node-sdk');
 const Papa = require('papaparse');
 const { getCountryName } = require('./countryCodes');
-const { translateProductName, cleanProductKey } = require('./translations');
+const { translateProductName, cleanProductKey, getProductUnit } = require('./translations');
 const fs = require('fs');
 const path = require('path');
 
@@ -29,7 +29,7 @@ const CsvVaultSchema = new mongoose.Schema({
 const CsvVault = mongoose.models.CsvVault || mongoose.model('CsvVault', CsvVaultSchema, 'csv_storage');
 
 const client = new lark.Client({ appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET });
-const CHUNK_SIZE = 100; // Với thuật toán mới, Vercel có thể xử lý dễ dàng 100 rows/file
+const CHUNK_SIZE = 80;
 
 function extractAttribute(row, keyword) {
     const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
@@ -57,7 +57,7 @@ const INVOICE_TEMPLATE = [
     ["", "", "", "", "INVOICE NO:", ""], ["", "", "", "", "DATE:", ""], ["", "", "", "", "CUSTOMER ID:", ""],
     ["Buyer:", "", "", "", "", ""], ["To", "", "", "", "", ""], ["Email", "", "", "", "", ""], ["Phone", "", "", "", "", ""],
     ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"],
-    ["1", "", "Pair", "30", "", "0.0"],
+    ["1", "", "", "30", "", "0.0"],
     ["Total", "", "", "", "0", "0.0"],
     ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""]
 ];
@@ -264,6 +264,7 @@ app.post('/webhook/event', async (req, res) => {
                         const qtyVal = qtyMatch ? qtyMatch[0] : "1";
                         const englishName = cleanProductKey(rawDesc);
                         const vietnameseName = translateProductName(englishName);
+                        const productUnit = getProductUnit(rawDesc);
                         const ProductName = vietnameseName ? `${englishName}\n(${vietnameseName})` : englishName;
                         const numericQty = parseFloat(qtyVal) || 1;
                         const totalAmount = (30 * numericQty).toFixed(1);
@@ -277,6 +278,7 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
                                 { val: ProductName, range: "B17:B17" },
+                                { val: productUnit, range: "C17:C17" },
                                 { val: qtyVal, range: "E17:E17" },
                                 { val: totalAmount, range: "F17:F17" },
                                 { val: qtyVal, range: "E18:E18" },
