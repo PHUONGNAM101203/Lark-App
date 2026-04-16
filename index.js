@@ -285,7 +285,7 @@ app.post('/webhook/event', async (req, res) => {
                         tag: 'button', text: { tag: 'plain_text', content: `${sheet.title} (${sheet.rowCount})` }, type: 'primary', url: sheet.url
                     }));
 
-                    // const finalLogText = debugLogs.join('\n').substring(0, 3000);
+                    const finalLogText = debugLogs.join('\n').substring(0, 3000);
 
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
@@ -297,7 +297,7 @@ app.post('/webhook/event', async (req, res) => {
                                     { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
                                     { tag: 'hr' },
                                     { tag: 'action', actions: actions.slice(0, 5) },
-                                    // { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
+                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
                                 ]
                             })
                         }

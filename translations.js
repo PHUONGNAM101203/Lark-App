@@ -20,7 +20,7 @@ function normalizeText(text) {
 function getProductUnit(rawDesc) {
   const text = normalizeText(rawDesc).toLowerCase();
   if (text.includes('piece')) return 'Piece';
-  return 'Pair'; // mặc định là Pair
+  return 'Pair';
 }
 
 function cleanProductKey(rawDesc) {
