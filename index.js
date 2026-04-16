@@ -8,6 +8,9 @@ const { translateProductName, cleanProductKey, getProductUnit } = require('./tra
 const fs = require('fs');
 const path = require('path');
 
+// Thêm hàm delay để chống quá tải API Lark
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 const app = express();
 app.use(express.json());
 
@@ -29,7 +32,9 @@ const CsvVaultSchema = new mongoose.Schema({
 const CsvVault = mongoose.models.CsvVault || mongoose.model('CsvVault', CsvVaultSchema, 'csv_storage');
 
 const client = new lark.Client({ appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET });
-const CHUNK_SIZE = 70;
+
+// 🔥 CHUNK_SIZE = 100 theo yêu cầu của bạn
+const CHUNK_SIZE = 100; 
 
 function extractAttribute(row, keyword) {
     const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
@@ -63,7 +68,7 @@ const INVOICE_TEMPLATE = [
 ];
 
 // =========================================================================
-// 🔥 THUẬT TOÁN ĐÃ FIX: CHIA NHỎ REQUEST COPY + BẮT LỖI CHẶT CHẼ
+// 🔥 THUẬT TOÁN ĐÃ FIX: CHỐNG QUÁ TẢI + ĐẾM SỐ THỨ TỰ
 // =========================================================================
 async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows, debugLogs, globalOffset) {
     const title = `${fileName.replace(/\.csv$/i, '')} - Part ${batchIndex + 1}`;
@@ -82,22 +87,20 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         const ssToken = createData.data.spreadsheet.spreadsheet_token;
         const ssUrl = createData.data.spreadsheet.url;
 
-        // 2. LẤY ID CỦA SHEET MẶC ĐỊNH
+        // 2. LẤY ID CỦA SHEET MẶC ĐỊNH LÀM TEMPLATE GỐC
         const queryRes1 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
             method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
         });
         const queryData1 = await queryRes1.json();
         const templateSheetId = queryData1.data.sheets[0].sheet_id;
 
-        // 3. APPLY TEMPLATE (Values, Merge, Style, Logo)
-        // A. Values
+        // 3. APPLY TEMPLATE
         await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values`, {
             method: 'PUT',
             headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ valueRange: { range: `${templateSheetId}!A1:F19`, values: INVOICE_TEMPLATE } })
         });
 
-        // B. Merge
         const mergeRanges = [
             `${templateSheetId}!A1:C4`, `${templateSheetId}!A5:F5`, `${templateSheetId}!A6:F6`,
             `${templateSheetId}!A7:F7`, `${templateSheetId}!A8:F8`, `${templateSheetId}!A18:D18`,
@@ -111,7 +114,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
             });
         }
 
-        // C. Style
         const stylePayload = {
             data: [
                 { ranges: [`${templateSheetId}!A1:C4`], style: { hAlign: 1, vAlign: 1 } },
@@ -130,7 +132,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
             body: JSON.stringify(stylePayload)
         });
 
-        // D. Logo (Đã sửa lỗi copy nhầm code)
+        // Logo
         try {
             const logoPath = path.join(process.cwd(), 'public', 'logo.png');
             if (fs.existsSync(logoPath)) {
@@ -139,31 +141,43 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
                     body: JSON.stringify({ range: `${templateSheetId}!A1:A1`, image: Array.from(fs.readFileSync(logoPath)), name: 'logo.png' })
                 });
             }
-        } catch (imgErr) {
-            debugLogs.push(`⚠️ Lỗi chèn logo: ${imgErr.message}`);
-        }
+        } catch (imgErr) { debugLogs.push(`⚠️ Lỗi logo: ${imgErr.message}`); }
 
-        // 4. NHÂN BẢN TEMPLATE (Sử dụng globalOffset để nối tiếp số thứ tự)
+        // 4. NHÂN BẢN TEMPLATE (CÓ CƠ CHẾ CHỐNG RỚT SHEET & ĐẾM SỐ NỐI TIẾP)
         debugLogs.push(`📝 Đang nhân bản thành ${rows.length} Tabs...`);
-        // Thay vì dùng index của mảng nhỏ, ta cộng thêm globalOffset
         const sheetTitles = rows.map((row, index) => sanitizeSheetName(row.waybillNumber, globalOffset + index));
-
-        const COPY_BATCH_SIZE = 10;
+        
+        const COPY_BATCH_SIZE = 5; // Chỉ 5 để siêu an toàn với 100 sheets
+        
         for (let i = 0; i < sheetTitles.length; i += COPY_BATCH_SIZE) {
             const batchTitles = sheetTitles.slice(i, i + COPY_BATCH_SIZE);
             const copyRequests = batchTitles.map(title => ({
                 copySheet: { source: { sheetId: templateSheetId }, destination: { title } }
             }));
 
-            const copyRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
-                method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ requests: copyRequests })
-            });
-            const copyData = await copyRes.json();
+            let retries = 3;
+            let success = false;
 
-            if (copyData.code !== 0) {
-                console.error("❌ Lỗi Copy Sheet:", copyData);
-                debugLogs.push(`⚠️ Lỗi khi copy sheets: ${copyData.msg}`);
+            while (retries > 0 && !success) {
+                try {
+                    const copyRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
+                        method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ requests: copyRequests })
+                    });
+                    const copyData = await copyRes.json();
+
+                    if (copyData.code !== 0) {
+                        retries--;
+                        debugLogs.push(`⚠️ Lỗi Lark (Thử lại còn ${retries}): ${copyData.msg}`);
+                        await delay(1500);
+                    } else {
+                        success = true;
+                        await delay(500); // Nghỉ nhẹ nhàng
+                    }
+                } catch (err) {
+                    retries--;
+                    await delay(1500);
+                }
             }
         }
 
@@ -182,9 +196,7 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
 
         for (let index = 0; index < rows.length; index++) {
             const row = rows[index];
-            const expectedTitle = sheetTitles[index];
-            const targetId = sheetIdMap[expectedTitle];
-
+            const targetId = sheetIdMap[sheetTitles[index]];
             if (!targetId) {
                 missingSheetsCount++;
                 continue;
@@ -200,14 +212,10 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         if (allValueRanges.length > 0) {
             const rangeChunks = chunkArray(allValueRanges, 150);
             for (const chunk of rangeChunks) {
-                const updateRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+                await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
                     method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ valueRanges: chunk })
                 });
-                const updateData = await updateRes.json();
-                if (updateData.code !== 0) {
-                    debugLogs.push(`⚠️ Lỗi điền dữ liệu: ${updateData.msg}`);
-                }
             }
         }
 
@@ -221,7 +229,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         return { title, url: ssUrl, rowCount: rows.length - missingSheetsCount };
 
     } catch (error) {
-        console.error("🚨 Fatal Error trong quá trình tạo Batch:", error);
         debugLogs.push(`❌ Lỗi nghiêm trọng: ${error.message}`);
         return { title: `${fileName} (LỖI)`, url: "", rowCount: 0 };
     }
@@ -275,7 +282,6 @@ app.post('/webhook/event', async (req, res) => {
                         const englishName = cleanProductKey(rawDesc);
                         const vietnameseName = translateProductName(englishName);
                         const ProductName = vietnameseName ? `${englishName}\n(${vietnameseName})` : englishName;
-                        const productUnit = getProductUnit(rawDesc);
                         const numericQty = parseFloat(qtyVal) || 1;
                         const totalAmount = (30 * numericQty).toFixed(1);
 
@@ -288,7 +294,7 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: extractAttribute(row, 'email'), range: "B14:B14" },
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
                                 { val: ProductName, range: "B17:B17" },
-                                { val: productUnit, range: "C17:C17" },
+                                { val: getProductUnit(rawDesc), range: "C17:C17" },
                                 { val: qtyVal, range: "E17:E17" },
                                 { val: totalAmount, range: "F17:F17" },
                                 { val: qtyVal, range: "E18:E18" },
@@ -302,22 +308,19 @@ app.post('/webhook/event', async (req, res) => {
                         path: { message_id: message.message_id },
                         data: {
                             msg_type: 'text',
-                            content: JSON.stringify({ text: `⏳ Đã nhận ${rowsData.length} đơn.\n🚀 Đang tiến hành tạo ĐỒNG THỜI ${rowChunks.length} file (mỗi file ${CHUNK_SIZE} sheets)...` })
+                            content: JSON.stringify({ text: `⏳ Đã nhận ${rowsData.length} đơn.\n🚀 Đang tiến hành tạo ${rowChunks.length} file (mỗi file ${CHUNK_SIZE} sheets)...` })
                         }
                     });
+                    
                     const createdSheets = [];
+                    let globalOffset = 0; // Biến tracking số thứ tự sheet
 
                     // Khởi chạy tạo các Batch
-                    let globalOffset = 0; // Biến theo dõi số lượng sheet đã tạo
-
                     for (let batchIndex = 0; batchIndex < rowChunks.length; batchIndex++) {
                         const batchRows = rowChunks[batchIndex];
-                        // Truyền thêm globalOffset vào hàm
                         const batchResult = await createSpreadsheetForBatch(tenantToken, `Invoices: ${file_name}`, batchIndex, batchRows, debugLogs, globalOffset);
                         createdSheets.push(batchResult);
-
-                        // Cộng dồn số lượng row của batch này để batch sau đếm tiếp
-                        globalOffset += batchRows.length;
+                        globalOffset += batchRows.length; // Cộng dồn để đếm tiếp cho file sau
                     }
 
                     await connectDB();
@@ -326,8 +329,6 @@ app.post('/webhook/event', async (req, res) => {
                     const actions = createdSheets.map(sheet => ({
                         tag: 'button', text: { tag: 'plain_text', content: `${sheet.title} (${sheet.rowCount})` }, type: 'primary', url: sheet.url
                     }));
-
-                    const finalLogText = debugLogs.join('\n').substring(0, 3000);
 
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
@@ -338,8 +339,7 @@ app.post('/webhook/event', async (req, res) => {
                                 elements: [
                                     { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
                                     { tag: 'hr' },
-                                    { tag: 'action', actions: actions.slice(0, 5) },
-                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
+                                    { tag: 'action', actions: actions }
                                 ]
                             })
                         }
