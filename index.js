@@ -29,7 +29,7 @@ const CsvVaultSchema = new mongoose.Schema({
 const CsvVault = mongoose.models.CsvVault || mongoose.model('CsvVault', CsvVaultSchema, 'csv_storage');
 
 const client = new lark.Client({ appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET });
-const CHUNK_SIZE = 80;
+const CHUNK_SIZE = 80; // Với thuật toán mới, Vercel có thể xử lý dễ dàng 100 rows/file
 
 function extractAttribute(row, keyword) {
     const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
@@ -78,21 +78,6 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const createData = await createRes.json();
     const ssToken = createData.data.spreadsheet.spreadsheet_token;
     const ssUrl = createData.data.spreadsheet.url;
-    // =========================================================
-    // 🔓 1.5 MỞ QUYỀN MẶC ĐỊNH LÀ "EDIT" CHO MỌI NGƯỜI
-    // =========================================================
-    debugLogs.push(`🔓 Đang mở quyền Edit mặc định cho link...`);
-    await fetch(`https://open.larksuite.com/open-apis/drive/v1/permissions/${ssToken}/public`, {
-        method: 'PATCH',
-        headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            // "tenant_editable": Bất kỳ ai trong công ty có link đều có thể sửa.
-            // Nếu muốn mở ra ngoài công ty, có thể dùng "anyone_editable" (tùy cài đặt bảo mật của admin)
-            link_share_entity: "tenant_editable",
-            external_access: true
-        })
-    }).catch(err => debugLogs.push(`⚠️ Lỗi khi mở quyền Public: ${err.message}`));
-    // =========================================================
 
     // 2. LẤY ID CỦA SHEET MẶC ĐỊNH LÀM TEMPLATE GỐC
     const queryRes1 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
@@ -159,23 +144,18 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     const copyRequests = sheetTitles.map(title => ({
         copySheet: { source: { sheetId: templateSheetId }, destination: { title } }
     }));
-    const batchUpdateRes = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
+    await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/sheets_batch_update`, {
         method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ requests: copyRequests })
     });
-    const batchUpdateData = await batchUpdateRes.json();
 
-    // 5. LẤY DANH SÁCH SHEET_ID MỚI TỪ PHẢN HỒI (KHÔNG CẦN QUERY ĐỂ TRÁNH LAG KHI TẠO HÀNG LOẠT)
+    // 5. LẤY DANH SÁCH SHEET_ID MỚI
+    const queryRes2 = await fetch(`https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/${ssToken}/sheets/query`, {
+        method: 'GET', headers: { 'Authorization': `Bearer ${tenantToken}` }
+    });
+    const queryData2 = await queryRes2.json();
     const sheetIdMap = {};
-    if (batchUpdateData.code === 0 && batchUpdateData.data && batchUpdateData.data.replies) {
-        batchUpdateData.data.replies.forEach((reply, idx) => {
-            if (reply.copySheet && reply.copySheet.properties) {
-                sheetIdMap[sheetTitles[idx]] = reply.copySheet.properties.sheetId;
-            }
-        });
-    } else {
-        debugLogs.push(`⚠️ Lỗi batch copy: ${JSON.stringify(batchUpdateData)}`);
-    }
+    queryData2.data.sheets.forEach(s => { sheetIdMap[s.title] = s.sheet_id; });
 
     // 6. GOM TẤT CẢ DỮ LIỆU CÁ NHÂN VÀ ĐẨY BATCH 1 LẦN DUY NHẤT LÊN TẤT CẢ TABS
     debugLogs.push(`⚡ Đang điền dữ liệu hàng loạt...`);
@@ -193,17 +173,13 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
     }
 
     if (allValueRanges.length > 0) {
-        // Chia nhỏ mảng data ra mỗi cục 80 requests để không gặp lỗi payload limit của Lark
-        const rangeChunks = chunkArray(allValueRanges, 80);
+        // Chia nhỏ mảng data ra mỗi cục 150 requests để không quá tải Payload Lark
+        const rangeChunks = chunkArray(allValueRanges, 100);
         for (const chunk of rangeChunks) {
-            const res = await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
+            await fetch(`https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/${ssToken}/values_batch_update`, {
                 method: 'POST', headers: { 'Authorization': `Bearer ${tenantToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ valueRanges: chunk })
             });
-            const data = await res.json();
-            if (data.code !== 0) {
-                debugLogs.push(`⚠️ Lỗi values batch update: ${JSON.stringify(data)}`);
-            }
         }
     }
 
@@ -264,8 +240,8 @@ app.post('/webhook/event', async (req, res) => {
                         const qtyVal = qtyMatch ? qtyMatch[0] : "1";
                         const englishName = cleanProductKey(rawDesc);
                         const vietnameseName = translateProductName(englishName);
-                        const productUnit = getProductUnit(rawDesc);
                         const ProductName = vietnameseName ? `${englishName}\n(${vietnameseName})` : englishName;
+                        const productUnit = getProductUnit(rawDesc);
                         const numericQty = parseFloat(qtyVal) || 1;
                         const totalAmount = (30 * numericQty).toFixed(1);
 
@@ -311,7 +287,7 @@ app.post('/webhook/event', async (req, res) => {
                         tag: 'button', text: { tag: 'plain_text', content: `${sheet.title} (${sheet.rowCount})` }, type: 'primary', url: sheet.url
                     }));
 
-                    const finalLogText = debugLogs.join('\n').substring(0, 3000);
+                    // const finalLogText = debugLogs.join('\n').substring(0, 3000);
 
                     await client.im.message.reply({
                         path: { message_id: message.message_id },
@@ -323,7 +299,7 @@ app.post('/webhook/event', async (req, res) => {
                                     { tag: 'div', text: { tag: 'lark_md', content: `📝 **File:** ${file_name}\n📊 **Số Invoice:** ${rowsData.length}` } },
                                     { tag: 'hr' },
                                     { tag: 'action', actions: actions.slice(0, 5) },
-                                    { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
+                                    // { tag: 'div', text: { tag: 'lark_md', content: `**🖥️ VERCEL DEBUG LOGS:**\n\`\`\`\n${finalLogText}\n\`\`\`` } }
                                 ]
                             })
                         }
