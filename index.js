@@ -33,8 +33,7 @@ const CsvVault = mongoose.models.CsvVault || mongoose.model('CsvVault', CsvVault
 
 const client = new lark.Client({ appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET });
 
-// 🔥 CHUNK_SIZE = 100 theo yêu cầu của bạn
-const CHUNK_SIZE = 100; 
+const CHUNK_SIZE = 100;
 
 function extractAttribute(row, keyword) {
     const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
@@ -146,9 +145,9 @@ async function createSpreadsheetForBatch(tenantToken, fileName, batchIndex, rows
         // 4. NHÂN BẢN TEMPLATE (CÓ CƠ CHẾ CHỐNG RỚT SHEET & ĐẾM SỐ NỐI TIẾP)
         debugLogs.push(`📝 Đang nhân bản thành ${rows.length} Tabs...`);
         const sheetTitles = rows.map((row, index) => sanitizeSheetName(row.waybillNumber, globalOffset + index));
-        
+
         const COPY_BATCH_SIZE = 5; // Chỉ 5 để siêu an toàn với 100 sheets
-        
+
         for (let i = 0; i < sheetTitles.length; i += COPY_BATCH_SIZE) {
             const batchTitles = sheetTitles.slice(i, i + COPY_BATCH_SIZE);
             const copyRequests = batchTitles.map(title => ({
@@ -311,7 +310,7 @@ app.post('/webhook/event', async (req, res) => {
                             content: JSON.stringify({ text: `⏳ Đã nhận ${rowsData.length} đơn.\n🚀 Đang tiến hành tạo ${rowChunks.length} file (mỗi file ${CHUNK_SIZE} sheets)...` })
                         }
                     });
-                    
+
                     const createdSheets = [];
                     let globalOffset = 0; // Biến tracking số thứ tự sheet
 

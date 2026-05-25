@@ -6,7 +6,7 @@ const exactTranslationMap = {
   'Epsom grain calfskin leather watch straps Chocolate': 'Da bê vân Epsom màu Chocolate',
   'Epsom grain calfskin leather watch straps Taupe grey brown': 'Da bê vân Epsom màu ghi nâu',
   'Lagun grain cowhide leather wallet Khaki': 'Da bò vân lagun màu kaki',
-  'Sully grain goatskin leather wallet Noir': 'Da dê vân sully màu noir',
+  'Sully grain goatskin leather wallet Noir black': 'Da dê vân sully màu noir',
   'Epsom grain calfskin leather wallet HAAS Cream': 'Da bê vân Epsom HAAS màu kem',
   'CLOE grain cowhide leather wallet Black': 'Da bò vân CLOE màu đen',
   'Epsom grain calfskin leather wallet Chocolate': 'Da bê vân Epsom màu Chocolate',
