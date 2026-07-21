@@ -1,16 +1,20 @@
 const exactTranslationMap = {
-  'Lagun grain cowhide leather watch straps Khaki': 'Da bò vân lagun màu kaki',
-  'Sully grain goatskin leather watch straps Noir black': 'Da dê vân sully màu noir',
-  'Epsom grain calfskin leather watch straps HAAS Cream': 'Da bê vân Epsom HAAS màu kem',
-  'CLOE grain cowhide leather watch straps Black': 'Da bò vân CLOE màu đen',
-  'Epsom grain calfskin leather watch straps Chocolate': 'Da bê vân Epsom màu Chocolate',
-  'Epsom grain calfskin leather watch straps Taupe grey brown': 'Da bê vân Epsom màu ghi nâu',
-  'Lagun grain cowhide leather wallet Khaki': 'Da bò vân lagun màu kaki',
-  'Sully grain goatskin leather wallet Noir black': 'Da dê vân sully màu noir',
-  'Epsom grain calfskin leather wallet HAAS Cream': 'Da bê vân Epsom HAAS màu kem',
-  'CLOE grain cowhide leather wallet Black': 'Da bò vân CLOE màu đen',
-  'Epsom grain calfskin leather wallet Chocolate': 'Da bê vân Epsom màu Chocolate',
-  'Epsom grain calfskin leather wallet Taupe grey brown': 'Da bê vân Epsom màu ghi nâu'
+  'Sully goatskin leather watch straps Violine': 'Da dê vân sully màu Violine',
+  'Epsom calfskin leather watch straps Rouge': 'Da bê vân Epsom HAAS Màu Đỏ (Rouge)',
+  'Sully goatskin leather watch straps Rose': 'Da dê vân sully màu Rose',
+  'Epsom calfskin leather watch straps Navy Blue': 'Da bê vân Epsom HAAS Màu Xanh Navy (Navy Blue)',
+  'Sully goatskin leather watch straps Light Cream': 'Da dê vân Sully Màu Light Cream',
+  'Epsom calfskin leather watch straps Gold': 'Da bê vân Epsom Màu Nâu vàng (Gold)',
+  'Lagun cowhide leather watch straps Ficelle': 'Da bò vân Lagun Màu Trắng Đục (Ficelle)',
+  'Sully goatskin leather watch straps Noisette': 'Da dê vân Sully Màu Noisette',
+  'Sully grain goatskin leather wallet Violine': 'Da dê vân sully màu Violine',
+  'Epsom calfskin leather wallet Rouge': 'Da bê vân Epsom HAAS Màu Đỏ (Rouge)',
+  'Sully grain goatskin leather wallet Rose': 'Da dê vân sully màu Rose',
+  'Epsom calfskin leather wallet Navy Blue': 'Da bê vân Epsom HAAS Màu Xanh Navy (Navy Blue)',
+  'Sully goatskin leather wallet Light Cream': 'Da dê vân Sully Màu Light Cream',
+  'Epsom calfskin leather wallet Gold': 'Da bê vân Epsom Màu Nâu vàng (Gold)',
+  'Lagun cowhide leather wallet Ficelle': 'Da bò vân Lagun Màu Trắng Đục (Ficelle)',
+  'Sully goatskin leather wallet Noisette': 'Da dê vân Sully Màu Noisette'
 };
 
 function normalizeText(text) {
