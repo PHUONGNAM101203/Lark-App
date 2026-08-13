@@ -46,12 +46,31 @@ function chunkArray(array, size) {
     return chunks;
 }
 
+// 💵 BẢNG GIÁ THEO SỐ LƯỢNG (USD / đơn vị)
+// Từ 10 trở lên: để trống, cần check lại với Quin.
+const UNIT_PRICE_TIERS = [
+    { maxQty: 3, price: 50 },
+    { maxQty: 4, price: 45 },
+    { maxQty: 5, price: 35 },
+    { maxQty: 6, price: 30 },
+    { maxQty: 7, price: 25 },
+    { maxQty: 9, price: 20 }
+];
+
+// Trả về đơn giá theo qty, hoặc null nếu không xác định được (qty >= 10 hoặc qty không hợp lệ)
+function getUnitPrice(qty) {
+    const numericQty = Number(qty);
+    if (!Number.isFinite(numericQty) || numericQty <= 0) return null;
+    const tier = UNIT_PRICE_TIERS.find(t => numericQty <= t.maxQty);
+    return tier ? tier.price : null;
+}
+
 function sanitizeSheetName(rawName, fallbackIndex) {
     const candidate = String(rawName || '').replace(/[\\\/\?\*\[\]\:\;]/g, '').trim().substring(0, 40);
     return candidate ? `${candidate}-${fallbackIndex + 2}` : `Invoice-${fallbackIndex + 2}`;
 }
 
-// 📝 TEMPLATE ĐÃ CHUẨN HÓA (Giá mặc định 30)
+// 📝 TEMPLATE ĐÃ CHUẨN HÓA (Đơn giá + thành tiền được điền động theo qty)
 const INVOICE_TEMPLATE = [
     ["", "", "", "", "", ""], ["", "", "", "", "", ""], ["", "", "", "", "", ""], ["", "", "", "", "", ""],
     ["WILD AND KING COMPANY LIMITED", "", "", "", "", ""],
@@ -61,8 +80,8 @@ const INVOICE_TEMPLATE = [
     ["", "", "", "", "INVOICE NO:", ""], ["", "", "", "", "DATE:", ""], ["", "", "", "", "CUSTOMER ID:", ""],
     ["Buyer:", "", "", "", "", ""], ["To", "", "", "", "", ""], ["Email", "", "", "", "", ""], ["Phone", "", "", "", "", ""],
     ["No.", "Name of product/ Color", "UNIT", "Price/Unit ($)", "Qty", "Amount ($)"],
-    ["1", "", "", "30", "", "0.0"],
-    ["Total", "", "", "", "0", "0.0"],
+    ["1", "", "", "", "", ""],
+    ["Total", "", "", "", "", ""],
     ["SAY: US DOLLARS ONE HUNDRED SEVENTY ONLY", "", "", "", "", ""]
 ];
 
@@ -282,7 +301,10 @@ app.post('/webhook/event', async (req, res) => {
                         const vietnameseName = translateProductName(englishName);
                         const ProductName = vietnameseName ? `${englishName}\n(${vietnameseName})` : englishName;
                         const numericQty = parseFloat(qtyVal) || 1;
-                        const totalAmount = (30 * numericQty).toFixed(1);
+                        const unitPrice = getUnitPrice(numericQty);
+                        // Qty >= 10: để trống đơn giá và thành tiền
+                        const priceVal = unitPrice === null ? "" : String(unitPrice);
+                        const totalAmount = unitPrice === null ? "" : (unitPrice * numericQty).toFixed(1);
 
                         return {
                             waybillNumber: extractAttribute(row, 'waybill number') || `WB_${Math.floor(Math.random() * 1000)}`,
@@ -294,6 +316,7 @@ app.post('/webhook/event', async (req, res) => {
                                 { val: extractAttribute(row, 'recipient phone'), range: "B15:B15" },
                                 { val: ProductName, range: "B17:B17" },
                                 { val: getProductUnit(rawDesc), range: "C17:C17" },
+                                { val: priceVal, range: "D17:D17" },
                                 { val: qtyVal, range: "E17:E17" },
                                 { val: totalAmount, range: "F17:F17" },
                                 { val: qtyVal, range: "E18:E18" },
